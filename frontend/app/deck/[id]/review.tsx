@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -8,13 +8,15 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import CardStack from '@/src/components/review/CardStack';
+import CardStack, { CardStackHandle } from '@/src/components/review/CardStack';
 import UndoButton from '@/src/components/review/UndoButton';
 import { useReviewSession } from '@/src/hooks/useReviewSession';
 
 export default function ReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const cardStackRef = useRef<CardStackHandle>(null);
+
   const {
     cards,
     isLoading,
@@ -45,8 +47,9 @@ export default function ReviewScreen() {
           <Text style={styles.closeBtnText}>✕</Text>
         </Pressable>
 
-        <View style={styles.counterArea}>
-          <Text style={styles.counter}>
+        <View style={styles.progressPill}>
+          <View style={[styles.progressFill, { width: `${progress * 100}%` as any }]} />
+          <Text style={styles.progressLabel}>
             {reviewedCount} / {totalCount}
           </Text>
         </View>
@@ -54,22 +57,15 @@ export default function ReviewScreen() {
         <UndoButton onPress={handleUndo} disabled={!canUndo} />
       </View>
 
-      {/* Progress bar */}
-      {!sessionComplete && (
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
-        </View>
-      )}
-
       {sessionComplete ? (
         <View style={styles.centered}>
           <View style={styles.completionCard}>
             <Text style={styles.doneEmoji}>🎉</Text>
             <Text style={styles.doneTitle}>Session Complete!</Text>
-            <Text style={styles.doneSubtitle}>
+            <Text style={styles.doneSub}>
               {reviewedCount} card{reviewedCount !== 1 ? 's' : ''} reviewed
             </Text>
-            <View style={styles.completionStats}>
+            <View style={styles.statRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{reviewedCount}</Text>
                 <Text style={styles.statLabel}>Reviewed</Text>
@@ -82,19 +78,41 @@ export default function ReviewScreen() {
         </View>
       ) : (
         <>
-          <CardStack cards={cards} onSwipe={handleSwipe} />
-          <View style={styles.bottomHints}>
-            <View style={styles.hintItem}>
-              <Text style={styles.hintArrow}>←</Text>
-              <Text style={[styles.hintLabel, { color: '#ef4444' }]}>Again</Text>
+          {/* Card stack */}
+          <View style={styles.stackArea}>
+            <CardStack ref={cardStackRef} cards={cards} onSwipe={handleSwipe} />
+          </View>
+
+          {/* Tinder-style action buttons */}
+          <View style={styles.actions}>
+            <View style={styles.actionItem}>
+              <Pressable
+                style={[styles.actionBtn, styles.againBtn]}
+                onPress={() => cardStackRef.current?.swipe('left')}
+              >
+                <Text style={styles.againIcon}>✕</Text>
+              </Pressable>
+              <Text style={[styles.actionLabel, { color: '#ef4444' }]}>Again</Text>
             </View>
-            <View style={styles.hintItem}>
-              <Text style={styles.hintArrow}>↑</Text>
-              <Text style={[styles.hintLabel, { color: '#3b82f6' }]}>Easy</Text>
+
+            <View style={styles.actionItem}>
+              <Pressable
+                style={[styles.actionBtn, styles.easyBtn]}
+                onPress={() => cardStackRef.current?.swipe('up')}
+              >
+                <Text style={styles.easyIcon}>★</Text>
+              </Pressable>
+              <Text style={[styles.actionLabel, { color: '#3b82f6' }]}>Easy</Text>
             </View>
-            <View style={styles.hintItem}>
-              <Text style={styles.hintArrow}>→</Text>
-              <Text style={[styles.hintLabel, { color: '#22c55e' }]}>Good</Text>
+
+            <View style={styles.actionItem}>
+              <Pressable
+                style={[styles.actionBtn, styles.goodBtn]}
+                onPress={() => cardStackRef.current?.swipe('right')}
+              >
+                <Text style={styles.goodIcon}>♥</Text>
+              </Pressable>
+              <Text style={[styles.actionLabel, { color: '#22c55e' }]}>Good</Text>
             </View>
           </View>
         </>
@@ -108,13 +126,14 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   loadingText: { marginTop: 12, fontSize: 15, color: '#6b7280' },
 
+  // Top bar
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 12,
     paddingHorizontal: 16,
     paddingTop: 4,
-    paddingBottom: 8,
+    paddingBottom: 12,
   },
   closeBtn: {
     width: 36,
@@ -124,34 +143,91 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  closeBtnText: { fontSize: 14, color: '#6b7280', fontWeight: '600' },
-  counterArea: { alignItems: 'center' },
-  counter: { fontSize: 15, color: '#374151', fontWeight: '600' },
+  closeBtnText: { fontSize: 13, color: '#6b7280', fontWeight: '700' },
 
-  progressTrack: {
-    height: 4,
+  // Progress pill replaces the separate bar
+  progressPill: {
+    flex: 1,
+    height: 28,
     backgroundColor: '#e5e7eb',
-    marginHorizontal: 16,
-    borderRadius: 2,
-    marginBottom: 4,
+    borderRadius: 14,
     overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
   },
   progressFill: {
-    height: '100%',
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
     backgroundColor: '#3b82f6',
-    borderRadius: 2,
+    borderRadius: 14,
+    opacity: 0.25,
+  },
+  progressLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#374151',
+    letterSpacing: 0.3,
   },
 
-  bottomHints: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingHorizontal: 24,
-    paddingBottom: 20,
-    paddingTop: 12,
+  // Card stack area
+  stackArea: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  hintItem: { alignItems: 'center', gap: 2 },
-  hintArrow: { fontSize: 18, color: '#9ca3af' },
-  hintLabel: { fontSize: 12, fontWeight: '600', letterSpacing: 0.3 },
+
+  // Tinder action buttons
+  actions: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    gap: 28,
+    paddingHorizontal: 32,
+    paddingTop: 16,
+    paddingBottom: 12,
+  },
+  actionItem: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  actionBtn: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 100,
+    borderWidth: 2,
+    backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  againBtn: {
+    width: 58,
+    height: 58,
+    borderColor: '#fca5a5',
+  },
+  easyBtn: {
+    width: 50,
+    height: 50,
+    borderColor: '#93c5fd',
+  },
+  goodBtn: {
+    width: 66,
+    height: 66,
+    borderColor: '#86efac',
+  },
+  againIcon: { fontSize: 22, color: '#ef4444', fontWeight: '700' },
+  easyIcon: { fontSize: 20, color: '#3b82f6', fontWeight: '700' },
+  goodIcon: { fontSize: 26, color: '#22c55e' },
+  actionLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
 
   // Session complete
   completionCard: {
@@ -168,8 +244,8 @@ const styles = StyleSheet.create({
   },
   doneEmoji: { fontSize: 56, marginBottom: 12 },
   doneTitle: { fontSize: 26, fontWeight: '800', color: '#1f2937', marginBottom: 6 },
-  doneSubtitle: { fontSize: 16, color: '#6b7280', marginBottom: 24 },
-  completionStats: {
+  doneSub: { fontSize: 16, color: '#6b7280', marginBottom: 24 },
+  statRow: {
     flexDirection: 'row',
     gap: 32,
     marginBottom: 28,

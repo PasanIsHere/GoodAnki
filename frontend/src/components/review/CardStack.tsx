@@ -1,9 +1,11 @@
-import React from 'react';
-import { StyleSheet, View, Text, Dimensions } from 'react-native';
+import React, { useImperativeHandle, useRef } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import { Card, SwipeDirection } from '../../types';
-import SwipeCard from './SwipeCard';
+import SwipeCard, { CARD_HEIGHT, CARD_WIDTH, SwipeCardHandle } from './SwipeCard';
 
-const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+export interface CardStackHandle {
+  swipe: (direction: SwipeDirection) => void;
+}
 
 interface CardStackProps {
   cards: Card[];
@@ -12,40 +14,55 @@ interface CardStackProps {
 
 const MAX_VISIBLE = 3;
 
-export default function CardStack({ cards, onSwipe }: CardStackProps) {
-  if (cards.length === 0) {
+const CardStack = React.forwardRef<CardStackHandle, CardStackProps>(
+  function CardStack({ cards, onSwipe }, ref) {
+    const topCardRef = useRef<SwipeCardHandle>(null);
+
+    useImperativeHandle(ref, () => ({
+      swipe(direction: SwipeDirection) {
+        topCardRef.current?.swipe(direction);
+      },
+    }));
+
+    if (cards.length === 0) {
+      return (
+        <View style={styles.emptyContainer}>
+          <Text style={styles.emptyEmoji}>🎉</Text>
+          <Text style={styles.emptyTitle}>All done!</Text>
+          <Text style={styles.emptySubtitle}>No more cards to review right now.</Text>
+        </View>
+      );
+    }
+
+    const visibleCards = cards.slice(0, MAX_VISIBLE);
+
     return (
-      <View style={styles.emptyContainer}>
-        <Text style={styles.emptyEmoji}>🎉</Text>
-        <Text style={styles.emptyTitle}>All done!</Text>
-        <Text style={styles.emptySubtitle}>No more cards to review right now.</Text>
+      <View style={styles.container}>
+        {visibleCards
+          .map((card, index) => (
+            <SwipeCard
+              key={card.id}
+              ref={index === 0 ? topCardRef : null}
+              card={card}
+              isTop={index === 0}
+              index={index}
+              onSwipe={(direction) => onSwipe(card, direction)}
+            />
+          ))
+          .reverse()}
       </View>
     );
   }
+);
 
-  const visibleCards = cards.slice(0, MAX_VISIBLE);
-
-  return (
-    <View style={styles.container}>
-      {visibleCards.map((card, index) => (
-        <SwipeCard
-          key={card.id}
-          card={card}
-          isTop={index === 0}
-          index={index}
-          onSwipe={(direction) => onSwipe(card, direction)}
-        />
-      )).reverse()}
-    </View>
-  );
-}
+export default CardStack;
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    width: CARD_WIDTH,
+    height: CARD_HEIGHT,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 20,
   },
   emptyContainer: {
     flex: 1,

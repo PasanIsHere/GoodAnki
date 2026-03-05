@@ -3,9 +3,10 @@
 An .apkg file is a zip archive containing:
 - collection.anki2 or collection.anki21: SQLite database with notes, cards, models
 - media: JSON mapping of numeric filenames to original names
-- 0, 1, 2...: media files
+- 0, 1, 2...: the actual media files
 """
 
+import base64
 import html as html_lib
 import json
 import re
@@ -23,9 +24,9 @@ def parse_apkg(file_path: str | Path) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
-        # Extract zip
         with zipfile.ZipFile(file_path, "r") as zf:
             zf.extractall(tmpdir)
+            media_dict = _load_media(zf)
 
         # Find the SQLite database
         db_path = tmpdir / "collection.anki21"
@@ -37,16 +38,30 @@ def parse_apkg(file_path: str | Path) -> dict[str, Any]:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         try:
-            return _extract_data(conn)
+            return _extract_data(conn, media_dict)
         finally:
             conn.close()
 
 
-def _extract_data(conn: sqlite3.Connection) -> dict[str, Any]:
+def _load_media(zf: zipfile.ZipFile) -> dict[str, bytes]:
+    """Return {original_filename: file_bytes} for every media file in the archive."""
+    names = zf.namelist()
+    if "media" not in names:
+        return {}
+
+    media_index: dict[str, str] = json.loads(zf.read("media"))
+    # media_index maps numeric zip entry names → original filenames
+    result: dict[str, bytes] = {}
+    for num_name, orig_name in media_index.items():
+        if num_name in names:
+            result[orig_name] = zf.read(num_name)
+    return result
+
+
+def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dict[str, Any]:
     """Extract decks, models, and notes from the Anki SQLite database."""
     cursor = conn.cursor()
 
-    # Get collection metadata (models and decks config)
     col_row = cursor.execute("SELECT models, decks FROM col").fetchone()
     models = json.loads(col_row["models"])
     decks_config = json.loads(col_row["decks"])
@@ -55,56 +70,37 @@ def _extract_data(conn: sqlite3.Connection) -> dict[str, Any]:
     model_map: dict[str, dict] = {}
     for mid, model in models.items():
         field_names = [f["name"] for f in model["flds"]]
-        templates = []
-        for tmpl in model["tmpls"]:
-            templates.append({
-                "name": tmpl["name"],
-                "qfmt": tmpl["qfmt"],
-                "afmt": tmpl["afmt"],
-            })
-        model_map[mid] = {
-            "name": model["name"],
-            "fields": field_names,
-            "templates": templates,
-        }
+        templates = [
+            {"name": t["name"], "qfmt": t["qfmt"], "afmt": t["afmt"]}
+            for t in model["tmpls"]
+        ]
+        model_map[mid] = {"name": model["name"], "fields": field_names, "templates": templates}
 
-    # Build deck map
-    deck_map: dict[str, str] = {}
-    for did, deck in decks_config.items():
-        deck_map[did] = deck["name"]
+    deck_map: dict[str, str] = {did: d["name"] for did, d in decks_config.items()}
 
-    # Get all notes
     notes = cursor.execute("SELECT id, mid, flds, tags FROM notes").fetchall()
-
-    # Get all cards to map note -> deck
     cards = cursor.execute("SELECT id, nid, did FROM cards").fetchall()
-    note_to_deck: dict[int, str] = {}
-    for card in cards:
-        note_to_deck[card["nid"]] = str(card["did"])
+    note_to_deck: dict[int, str] = {card["nid"]: str(card["did"]) for card in cards}
 
-    # Group notes by deck
     decks_data: dict[str, dict] = {}
 
     for note in notes:
         nid = note["id"]
         mid = str(note["mid"])
-        fields_raw = note["flds"]
         tags = note["tags"].strip()
 
         model = model_map.get(mid)
         if not model:
             continue
 
-        # Split fields by Anki's \x1f separator
-        field_values = fields_raw.split("\x1f")
-        fields_dict = {}
-        for i, name in enumerate(model["fields"]):
-            fields_dict[name] = field_values[i] if i < len(field_values) else ""
+        field_values = note["flds"].split("\x1f")
+        fields_dict = {
+            name: field_values[i] if i < len(field_values) else ""
+            for i, name in enumerate(model["fields"])
+        }
 
-        # Determine front/back from template or field names
-        front, back = _extract_front_back(fields_dict, model)
+        front, back = _extract_front_back(fields_dict, model, media_dict)
 
-        # Skip cards with no meaningful content
         if not front and not back:
             continue
 
@@ -112,21 +108,11 @@ def _extract_data(conn: sqlite3.Connection) -> dict[str, Any]:
         deck_name = deck_map.get(did, "Default")
 
         if did not in decks_data:
-            decks_data[did] = {
-                "name": deck_name,
-                "description": "",
-                "cards": [],
-            }
+            decks_data[did] = {"name": deck_name, "description": "", "cards": []}
 
-        decks_data[did]["cards"].append({
-            "front": front,
-            "back": back,
-            "tags": tags,
-        })
+        decks_data[did]["cards"].append({"front": front, "back": back, "tags": tags})
 
-    # Convert to list
     result_decks = list(decks_data.values())
-
     return {
         "decks": result_decks,
         "total_cards": sum(len(d["cards"]) for d in result_decks),
@@ -134,84 +120,181 @@ def _extract_data(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def _extract_field_refs(template_str: str) -> list[str]:
-    """Extract {{FieldName}} references from an Anki template string.
-
-    Excludes conditionals ({{#...}}, {{^...}}, {{/...}}) and special
-    directives like {{FrontSide}}, {{Tags}}, {{Type}}, {{Deck}}, etc.
-    """
+    """Extract {{FieldName}} references, excluding special directives."""
     special = {"FrontSide", "Tags", "Type", "Deck", "Subdeck", "Card", "CardFlag"}
     matches = re.findall(r"\{\{(?![#/\^!])([^}]+)\}\}", template_str)
     return [m.strip() for m in matches if m.strip() and m.strip() not in special]
 
 
-def _extract_front_back(fields: dict[str, str], model: dict) -> tuple[str, str]:
-    """Extract front and back text from note fields.
+def _extract_front_back(
+    fields: dict[str, str],
+    model: dict,
+    media_dict: dict[str, bytes],
+) -> tuple[str, str]:
+    """Extract front and back content from note fields.
 
-    Strategy (in order):
-    1. Standard Front/Back or Question/Answer field names
-    2. Template-based: use qfmt field refs as front, afmt refs as back
-    3. Fallback: first non-empty field as front, combine remaining as back
+    Returns plain text for text-only cards, or HTML strings (with inline
+    data-URI media) when the card contains images or audio.
     """
-    field_names = list(fields.keys())
-
-    # 1. Try standard naming conventions first
+    # 1. Standard naming
     for front_key in ("Front", "front", "Question", "question"):
         if front_key in fields and fields[front_key].strip():
             for back_key in ("Back", "back", "Answer", "answer"):
                 if back_key in fields:
-                    return _clean_html(fields[front_key]), _clean_html(fields[back_key])
+                    return (
+                        _process_field(fields[front_key], media_dict),
+                        _process_field(fields[back_key], media_dict),
+                    )
 
-    # 2. Template-based extraction — collect all valid (front, back) pairs from all templates,
-    #    then pick the pair whose front is most compact (shortest = most likely a word/character
-    #    rather than a long definition sentence).
+    # 2. Template-based: pick the candidate whose front is shortest (most compact)
     candidates: list[tuple[str, str]] = []
     for tmpl in model.get("templates", []):
         front_refs = _extract_field_refs(tmpl.get("qfmt", ""))
         back_refs = _extract_field_refs(tmpl.get("afmt", ""))
 
-        # Find front: first referenced field with non-empty content
         front_val = ""
         used_front_refs: set[str] = set()
         for ref in front_refs:
-            val = fields.get(ref, "").strip()
-            if val:
-                front_val = _clean_html(val)
+            raw = fields.get(ref, "").strip()
+            if raw:
+                front_val = _process_field(raw, media_dict)
                 used_front_refs.add(ref)
                 break
 
         if not front_val:
             continue
 
-        # Find back: back_refs minus front refs, combined
         back_parts = []
         for ref in back_refs:
             if ref in used_front_refs:
                 continue
-            val = fields.get(ref, "").strip()
-            if val:
-                back_parts.append(_clean_html(val))
+            raw = fields.get(ref, "").strip()
+            if raw:
+                back_parts.append(_process_field(raw, media_dict))
 
         back_val = "\n".join(back_parts)
         if back_val:
             candidates.append((front_val, back_val))
 
     if candidates:
-        # Prefer the card where the front is shortest (a single word/character,
-        # not a long definition). This makes language decks show word → meaning
-        # rather than definition → word.
-        candidates.sort(key=lambda pair: len(pair[0]))
+        # Prefer card where the front is shortest plain-text (word/character, not long definition)
+        candidates.sort(key=lambda pair: len(_strip_html(pair[0])))
         return candidates[0]
 
-    # 3. Fallback: first non-empty field as front, combine the rest as back
+    # 3. Fallback: first non-empty field as front, rest as back
     non_empty = [(name, val) for name, val in fields.items() if val.strip()]
     if len(non_empty) >= 2:
-        front = _clean_html(non_empty[0][1])
-        back_parts = [_clean_html(v) for _, v in non_empty[1:] if v.strip()]
+        front = _process_field(non_empty[0][1], media_dict)
+        back_parts = [_process_field(v, media_dict) for _, v in non_empty[1:] if v.strip()]
         return front, "\n".join(back_parts)
     elif len(non_empty) == 1:
-        return _clean_html(non_empty[0][1]), ""
+        return _process_field(non_empty[0][1], media_dict), ""
 
     return "", ""
+
+
+# ── Field processing ──────────────────────────────────────────────────────────
+
+def _process_field(text: str, media_dict: dict[str, bytes]) -> str:
+    """Process a single field value.
+
+    - With media: replaces [sound:…] with <audio> and <img src="fname"> with
+      inline data URIs, then lightly cleans surrounding HTML.
+    - Without media: fully strips HTML to plain text.
+    """
+    if not media_dict:
+        return _clean_html(text)
+
+    # Replace [sound:fname] → <audio> with data URI (or text placeholder)
+    text = _replace_sound_refs(text, media_dict)
+
+    # Replace <img src="fname"> → <img src="data:…;base64,…">
+    text = _replace_img_srcs(text, media_dict)
+
+    # If we embedded any media, keep light HTML; otherwise strip fully
+    if re.search(r"<img\s|<audio\s", text, re.IGNORECASE):
+        return _light_clean_html(text)
+    return _clean_html(text)
+
+
+def _replace_sound_refs(text: str, media_dict: dict[str, bytes]) -> str:
+    _AUDIO_MIME = {
+        "mp3": "audio/mpeg",
+        "ogg": "audio/ogg",
+        "wav": "audio/wav",
+        "m4a": "audio/mp4",
+        "aac": "audio/aac",
+    }
+
+    def replace(match: re.Match) -> str:
+        fname = match.group(1)
+        data = media_dict.get(fname)
+        if data:
+            ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else "mp3"
+            mime = _AUDIO_MIME.get(ext, "audio/mpeg")
+            b64 = base64.b64encode(data).decode()
+            return f'<audio controls src="data:{mime};base64,{b64}"></audio>'
+        return f"🔊 {fname}"
+
+    return re.sub(r"\[sound:([^\]]+)\]", replace, text)
+
+
+def _replace_img_srcs(text: str, media_dict: dict[str, bytes]) -> str:
+    _IMAGE_MIME = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+        "webp": "image/webp",
+        "svg": "image/svg+xml",
+        "bmp": "image/bmp",
+    }
+
+    def replace(match: re.Match) -> str:
+        before = match.group(1)
+        fname = match.group(2)
+        after = match.group(3)
+        data = media_dict.get(fname)
+        if data:
+            ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else "jpg"
+            mime = _IMAGE_MIME.get(ext, "image/jpeg")
+            b64 = base64.b64encode(data).decode()
+            return f'<img {before}src="data:{mime};base64,{b64}" {after}style="max-width:100%;height:auto">'
+        return match.group(0)
+
+    return re.sub(
+        r'<img\s([^>]*?)src=["\']([^"\']+)["\']([^>]*)>',
+        replace,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
+# ── HTML cleaning ─────────────────────────────────────────────────────────────
+
+def _strip_html(text: str) -> str:
+    """Strip all HTML tags — used for length measurement only."""
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def _light_clean_html(text: str) -> str:
+    """Clean HTML while preserving <img> and <audio> tags for rich display."""
+    # Remove Anki template directives
+    text = re.sub(r"\{\{[^}]+\}\}", "", text)
+    # Remove style/script blocks entirely
+    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    # Convert block elements to line breaks
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?(?:div|p|hr|li|ul|ol)[^>]*>", "\n", text, flags=re.IGNORECASE)
+    # Strip all tags EXCEPT img and audio
+    text = re.sub(r"<(?!/?(?:img|audio)\b)[^>]+>", "", text, flags=re.IGNORECASE)
+    # Unescape HTML entities
+    text = html_lib.unescape(text)
+    # Normalize whitespace (but keep newlines around media)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _clean_html(text: str) -> str:
@@ -233,16 +316,14 @@ def _clean_html(text: str) -> str:
     text = re.sub(r"</p>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"<hr[^>]*/?>", "", text, flags=re.IGNORECASE)
 
-    # Remove all remaining HTML tags (span, b, i, etc.)
+    # Remove all remaining HTML tags
     text = re.sub(r"<[^>]+>", "", text)
 
-    # Unescape HTML entities (&amp; &lt; &nbsp; &ensp; etc.)
+    # Unescape HTML entities
     text = html_lib.unescape(text)
 
     # Normalize whitespace
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n[ \t]+", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    text = text.strip()
-
-    return text
+    return text.strip()

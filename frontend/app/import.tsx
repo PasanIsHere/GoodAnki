@@ -57,11 +57,17 @@ export default function ImportScreen() {
     setPhase('uploading');
     try {
       const formData = new FormData();
-      formData.append('file', {
-        uri: file.uri,
-        name: file.name,
-        type: 'application/octet-stream',
-      } as any);
+      // On Expo Web, asset.file is a native browser File object — use it directly.
+      // On native (iOS/Android), use the {uri, name, type} RN FormData syntax.
+      if ((file as any).file instanceof File) {
+        formData.append('file', (file as any).file);
+      } else {
+        formData.append('file', {
+          uri: file.uri,
+          name: file.name,
+          type: 'application/octet-stream',
+        } as any);
+      }
 
       const response = await fetch(`${API_URL}/api/import`, {
         method: 'POST',
@@ -83,6 +89,28 @@ export default function ImportScreen() {
         e.message?.includes('fetch') || e.message?.includes('connect')
           ? `Could not reach the backend server at ${API_URL}.\n\nMake sure it is running:\n  cd backend\n  uvicorn app.main:app`
           : e.message || 'Failed to parse the .apkg file.'
+      );
+    }
+  };
+
+  const handleLoadLocalDeck = async () => {
+    setPhase('uploading');
+    try {
+      const response = await fetch(`${API_URL}/api/import/local`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(error.detail || 'Failed to load local deck');
+      }
+      const data: ParsedResult = await response.json();
+      setPreview(data);
+      setPhase('previewing');
+    } catch (e: any) {
+      setPhase('idle');
+      Alert.alert(
+        'Load Error',
+        e.message?.includes('fetch') || e.message?.includes('connect')
+          ? `Could not reach the backend server at ${API_URL}.\n\nMake sure it is running:\n  cd backend\n  uvicorn app.main:app`
+          : e.message || 'Failed to load the local test deck.'
       );
     }
   };
@@ -218,6 +246,9 @@ export default function ImportScreen() {
       <Pressable style={styles.primaryBtn} onPress={handlePickFile}>
         <Text style={styles.primaryBtnText}>Choose .apkg File</Text>
       </Pressable>
+      <Pressable style={styles.localBtn} onPress={handleLoadLocalDeck}>
+        <Text style={styles.localBtnText}>⚡ Load Local Test Deck</Text>
+      </Pressable>
       <View style={styles.serverHint}>
         <Text style={styles.serverHintLabel}>Backend URL</Text>
         <Text style={styles.serverHintValue}>{API_URL}</Text>
@@ -257,6 +288,16 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   primaryBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  localBtn: {
+    borderWidth: 1.5,
+    borderColor: '#3b82f6',
+    borderRadius: 12,
+    paddingHorizontal: 32,
+    paddingVertical: 12,
+    marginBottom: 24,
+  },
+  localBtnText: { color: '#3b82f6', fontSize: 15, fontWeight: '600' },
+
   serverHint: {
     backgroundColor: '#f3f4f6',
     borderRadius: 8,
