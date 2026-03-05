@@ -80,6 +80,26 @@ export async function createCard(deckId: string, front: string, back: string, ta
   };
 }
 
+export async function createCardsBatch(
+  deckId: string,
+  cards: { front: string; back: string; tags: string }[]
+): Promise<void> {
+  const db = await getDatabase();
+  const now = new Date().toISOString();
+
+  await db.withTransactionAsync(async () => {
+    for (const card of cards) {
+      const id = uuidv4();
+      await db.runAsync(
+        `INSERT INTO cards (id, deck_id, front, back, tags, state, due, stability, difficulty,
+         elapsed_days, scheduled_days, reps, lapses, last_review, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 0, ?, 0, 0, 0, 0, 0, 0, NULL, ?, ?)`,
+        [id, deckId, card.front, card.back, card.tags || '', now, now, now]
+      );
+    }
+  });
+}
+
 export async function updateCard(id: string, updates: Partial<Pick<Card, 'front' | 'back' | 'tags'>>): Promise<void> {
   const db = await getDatabase();
   const now = new Date().toISOString();

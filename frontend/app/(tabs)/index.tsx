@@ -48,22 +48,24 @@ export default function DeckListScreen() {
         <View style={styles.deckInfo}>
           <Text style={styles.deckName}>{item.name}</Text>
           <Text style={styles.deckMeta}>
-            {item.total_cards} cards
+            {item.total_cards} card{item.total_cards !== 1 ? 's' : ''}
           </Text>
         </View>
         <View style={styles.badgeContainer}>
           {item.new_count > 0 && (
             <View style={[styles.badge, styles.newBadge]}>
-              <Text style={styles.badgeText}>{item.new_count}</Text>
+              <Text style={styles.newBadgeText}>{item.new_count} new</Text>
             </View>
           )}
           {item.due_count > 0 && (
             <View style={[styles.badge, styles.dueBadge]}>
-              <Text style={styles.badgeText}>{item.due_count}</Text>
+              <Text style={styles.dueBadgeText}>{item.due_count} due</Text>
             </View>
           )}
           {dueTotal === 0 && (
-            <Text style={styles.doneText}>Done</Text>
+            <View style={styles.donePill}>
+              <Text style={styles.doneText}>Done ✓</Text>
+            </View>
           )}
         </View>
       </Pressable>
@@ -79,26 +81,40 @@ export default function DeckListScreen() {
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <View style={styles.empty}>
+            <Text style={styles.emptyIcon}>📚</Text>
             <Text style={styles.emptyTitle}>No decks yet</Text>
-            <Text style={styles.emptySubtitle}>Create a deck or import an .apkg file to get started.</Text>
+            <Text style={styles.emptySubtitle}>
+              Create a deck below, or tap{' '}
+              <Text style={styles.emptyLink} onPress={() => router.push('/import')}>
+                Import
+              </Text>
+              {' '}in the top-right to load an .apkg file.
+            </Text>
           </View>
         }
       />
+
       {showCreate ? (
         <View style={styles.createForm}>
           <TextInput
             style={styles.input}
-            placeholder="Deck name..."
+            placeholder="Deck name…"
+            placeholderTextColor="#9ca3af"
             value={newDeckName}
             onChangeText={setNewDeckName}
             autoFocus
             onSubmitEditing={handleCreateDeck}
+            returnKeyType="done"
           />
           <View style={styles.createButtons}>
-            <Pressable style={styles.cancelBtn} onPress={() => setShowCreate(false)}>
+            <Pressable style={styles.cancelBtn} onPress={() => { setShowCreate(false); setNewDeckName(''); }}>
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
-            <Pressable style={styles.createBtn} onPress={handleCreateDeck}>
+            <Pressable
+              style={[styles.createBtn, !newDeckName.trim() && styles.createBtnDisabled]}
+              onPress={handleCreateDeck}
+              disabled={!newDeckName.trim()}
+            >
               <Text style={styles.createText}>Create</Text>
             </Pressable>
           </View>
@@ -113,58 +129,66 @@ export default function DeckListScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f9fafb' },
+  container: { flex: 1, backgroundColor: '#f0f4ff' },
   list: { padding: 16, paddingBottom: 100 },
+
   deckCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 16,
-    marginBottom: 12,
+    marginBottom: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.07,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#e8f0fe',
   },
   deckInfo: { flex: 1, marginRight: 12 },
-  deckName: { fontSize: 17, fontWeight: '600', color: '#1f2937', marginBottom: 4 },
+  deckName: { fontSize: 17, fontWeight: '700', color: '#1e3a5f', marginBottom: 4 },
   deckMeta: { fontSize: 13, color: '#6b7280' },
-  badgeContainer: { flexDirection: 'row', gap: 6 },
+
+  badgeContainer: { flexDirection: 'row', gap: 6, alignItems: 'center' },
   badge: {
-    minWidth: 28,
-    height: 28,
-    borderRadius: 14,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 8,
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
   },
-  newBadge: { backgroundColor: '#3b82f6' },
-  dueBadge: { backgroundColor: '#22c55e' },
-  badgeText: { color: '#fff', fontSize: 13, fontWeight: '700' },
-  doneText: { fontSize: 14, color: '#9ca3af', fontWeight: '500' },
-  empty: { alignItems: 'center', paddingTop: 80 },
-  emptyTitle: { fontSize: 20, fontWeight: '600', color: '#374151', marginBottom: 8 },
-  emptySubtitle: { fontSize: 15, color: '#6b7280', textAlign: 'center', paddingHorizontal: 32 },
+  newBadge: { backgroundColor: '#eff6ff' },
+  newBadgeText: { color: '#3b82f6', fontSize: 12, fontWeight: '700' },
+  dueBadge: { backgroundColor: '#f0fdf4' },
+  dueBadgeText: { color: '#16a34a', fontSize: 12, fontWeight: '700' },
+  donePill: { paddingHorizontal: 10, paddingVertical: 4 },
+  doneText: { fontSize: 13, color: '#9ca3af', fontWeight: '500' },
+
+  empty: { alignItems: 'center', paddingTop: 80, paddingHorizontal: 32 },
+  emptyIcon: { fontSize: 56, marginBottom: 16 },
+  emptyTitle: { fontSize: 22, fontWeight: '700', color: '#374151', marginBottom: 10 },
+  emptySubtitle: { fontSize: 15, color: '#6b7280', textAlign: 'center', lineHeight: 22 },
+  emptyLink: { color: '#3b82f6', fontWeight: '600' },
+
   fab: {
     position: 'absolute',
-    bottom: 24,
+    bottom: 28,
     right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     backgroundColor: '#3b82f6',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#3b82f6',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    elevation: 8,
   },
-  fabText: { fontSize: 28, color: '#fff', fontWeight: '400', marginTop: -2 },
+  fabText: { fontSize: 30, color: '#fff', fontWeight: '300', marginTop: -2 },
+
   createForm: {
     position: 'absolute',
     bottom: 0,
@@ -172,21 +196,34 @@ const styles = StyleSheet.create({
     right: 0,
     backgroundColor: '#fff',
     padding: 16,
-    paddingBottom: 32,
+    paddingBottom: 36,
     borderTopWidth: 1,
     borderTopColor: '#e5e7eb',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 8,
   },
   input: {
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 8,
-    padding: 12,
+    borderWidth: 1.5,
+    borderColor: '#3b82f6',
+    borderRadius: 10,
+    padding: 13,
     fontSize: 16,
     marginBottom: 12,
+    color: '#1f2937',
+    backgroundColor: '#fafafa',
   },
-  createButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12 },
-  cancelBtn: { paddingHorizontal: 16, paddingVertical: 10 },
+  createButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
+  cancelBtn: { paddingHorizontal: 18, paddingVertical: 11 },
   cancelText: { color: '#6b7280', fontSize: 15, fontWeight: '500' },
-  createBtn: { backgroundColor: '#3b82f6', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
+  createBtn: {
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 22,
+    paddingVertical: 11,
+    borderRadius: 10,
+  },
+  createBtnDisabled: { backgroundColor: '#93c5fd' },
   createText: { color: '#fff', fontSize: 15, fontWeight: '600' },
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useReviewStore } from '../stores/reviewStore';
 import { getDueCards } from '../db/queries/cards';
 import { updateCardScheduling } from '../db/queries/cards';
@@ -9,11 +9,13 @@ import * as Haptics from 'expo-haptics';
 
 export function useReviewSession(deckId: string) {
   const store = useReviewStore();
+  const totalCountRef = useRef(0);
 
   const loadCards = useCallback(async () => {
     store.setLoading(true);
     try {
       const cards = await getDueCards(deckId);
+      totalCountRef.current = cards.length;
       store.setCards(cards);
     } finally {
       store.setLoading(false);
@@ -74,6 +76,7 @@ export function useReviewSession(deckId: string) {
     isLoading: store.isLoading,
     sessionComplete: store.sessionComplete,
     reviewedCount: store.reviewedCount,
+    totalCount: totalCountRef.current,
     canUndo: store.undoStack.length > 0,
     handleSwipe,
     handleUndo,

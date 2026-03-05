@@ -1,5 +1,6 @@
 import React from 'react';
-import { Tabs } from 'expo-router';
+import { Pressable, Text } from 'react-native';
+import { Tabs, useRouter } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 
 import Colors from '@/constants/Colors';
@@ -7,6 +8,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const router = useRouter();
 
   return (
     <Tabs
@@ -18,7 +20,17 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Decks',
+          title: 'My Decks',
+          headerRight: () => (
+            <Pressable
+              onPress={() => router.push('/import')}
+              style={{ marginRight: 16, paddingVertical: 4, paddingHorizontal: 2 }}
+            >
+              <Text style={{ color: Colors[colorScheme].tint, fontSize: 16, fontWeight: '500' }}>
+                Import
+              </Text>
+            </Pressable>
+          ),
           tabBarIcon: ({ color }) => (
             <SymbolView
               name={{ ios: 'rectangle.stack', android: 'cards', web: 'cards' }}

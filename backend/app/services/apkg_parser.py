@@ -6,7 +6,9 @@ An .apkg file is a zip archive containing:
 - 0, 1, 2...: media files
 """
 
+import html as html_lib
 import json
+import re
 import sqlite3
 import tempfile
 import zipfile
@@ -99,8 +101,12 @@ def _extract_data(conn: sqlite3.Connection) -> dict[str, Any]:
         for i, name in enumerate(model["fields"]):
             fields_dict[name] = field_values[i] if i < len(field_values) else ""
 
-        # Determine front/back from first template or first two fields
+        # Determine front/back from template or field names
         front, back = _extract_front_back(fields_dict, model)
+
+        # Skip cards with no meaningful content
+        if not front and not back:
+            continue
 
         did = note_to_deck.get(nid, "1")
         deck_name = deck_map.get(did, "Default")
@@ -127,48 +133,116 @@ def _extract_data(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def _extract_field_refs(template_str: str) -> list[str]:
+    """Extract {{FieldName}} references from an Anki template string.
+
+    Excludes conditionals ({{#...}}, {{^...}}, {{/...}}) and special
+    directives like {{FrontSide}}, {{Tags}}, {{Type}}, {{Deck}}, etc.
+    """
+    special = {"FrontSide", "Tags", "Type", "Deck", "Subdeck", "Card", "CardFlag"}
+    matches = re.findall(r"\{\{(?![#/\^!])([^}]+)\}\}", template_str)
+    return [m.strip() for m in matches if m.strip() and m.strip() not in special]
+
+
 def _extract_front_back(fields: dict[str, str], model: dict) -> tuple[str, str]:
     """Extract front and back text from note fields.
 
-    Uses simple heuristics:
-    - If the model has fields named Front/Back, use those
-    - Otherwise use the first two fields
+    Strategy (in order):
+    1. Standard Front/Back or Question/Answer field names
+    2. Template-based: use qfmt field refs as front, afmt refs as back
+    3. Fallback: first non-empty field as front, combine remaining as back
     """
     field_names = list(fields.keys())
 
-    # Try common field name patterns
-    for front_key in ["Front", "front", "Question", "question"]:
-        if front_key in fields:
-            for back_key in ["Back", "back", "Answer", "answer"]:
+    # 1. Try standard naming conventions first
+    for front_key in ("Front", "front", "Question", "question"):
+        if front_key in fields and fields[front_key].strip():
+            for back_key in ("Back", "back", "Answer", "answer"):
                 if back_key in fields:
                     return _clean_html(fields[front_key]), _clean_html(fields[back_key])
 
-    # Fallback: first field = front, rest = back
-    if len(field_names) >= 2:
-        front = fields[field_names[0]]
-        back = fields[field_names[1]]
-        return _clean_html(front), _clean_html(back)
-    elif len(field_names) == 1:
-        return _clean_html(fields[field_names[0]]), ""
+    # 2. Template-based extraction — collect all valid (front, back) pairs from all templates,
+    #    then pick the pair whose front is most compact (shortest = most likely a word/character
+    #    rather than a long definition sentence).
+    candidates: list[tuple[str, str]] = []
+    for tmpl in model.get("templates", []):
+        front_refs = _extract_field_refs(tmpl.get("qfmt", ""))
+        back_refs = _extract_field_refs(tmpl.get("afmt", ""))
+
+        # Find front: first referenced field with non-empty content
+        front_val = ""
+        used_front_refs: set[str] = set()
+        for ref in front_refs:
+            val = fields.get(ref, "").strip()
+            if val:
+                front_val = _clean_html(val)
+                used_front_refs.add(ref)
+                break
+
+        if not front_val:
+            continue
+
+        # Find back: back_refs minus front refs, combined
+        back_parts = []
+        for ref in back_refs:
+            if ref in used_front_refs:
+                continue
+            val = fields.get(ref, "").strip()
+            if val:
+                back_parts.append(_clean_html(val))
+
+        back_val = "\n".join(back_parts)
+        if back_val:
+            candidates.append((front_val, back_val))
+
+    if candidates:
+        # Prefer the card where the front is shortest (a single word/character,
+        # not a long definition). This makes language decks show word → meaning
+        # rather than definition → word.
+        candidates.sort(key=lambda pair: len(pair[0]))
+        return candidates[0]
+
+    # 3. Fallback: first non-empty field as front, combine the rest as back
+    non_empty = [(name, val) for name, val in fields.items() if val.strip()]
+    if len(non_empty) >= 2:
+        front = _clean_html(non_empty[0][1])
+        back_parts = [_clean_html(v) for _, v in non_empty[1:] if v.strip()]
+        return front, "\n".join(back_parts)
+    elif len(non_empty) == 1:
+        return _clean_html(non_empty[0][1]), ""
 
     return "", ""
 
 
 def _clean_html(text: str) -> str:
-    """Strip basic HTML tags from Anki field content."""
-    import re
+    """Strip HTML from Anki field content and produce clean readable text."""
+    # Remove Anki template directives {{...}}
+    text = re.sub(r"\{\{[^}]+\}\}", "", text)
 
-    # Remove HTML tags
-    text = re.sub(r"<br\s*/?>", "\n", text)
-    text = re.sub(r"<div[^>]*>", "\n", text)
-    text = re.sub(r"</div>", "", text)
+    # Convert ordered/unordered list items to bullet points
+    text = re.sub(r"<li[^>]*>", "• ", text, flags=re.IGNORECASE)
+    text = re.sub(r"</li>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[ou]l[^>]*>\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"</[ou]l>", "", text, flags=re.IGNORECASE)
+
+    # Convert block-level elements to newlines
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<div[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</div>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<p[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</p>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<hr[^>]*/?>", "", text, flags=re.IGNORECASE)
+
+    # Remove all remaining HTML tags (span, b, i, etc.)
     text = re.sub(r"<[^>]+>", "", text)
-    # Clean up whitespace
+
+    # Unescape HTML entities (&amp; &lt; &nbsp; &ensp; etc.)
+    text = html_lib.unescape(text)
+
+    # Normalize whitespace
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.strip()
-    # Unescape HTML entities
-    text = text.replace("&amp;", "&")
-    text = text.replace("&lt;", "<")
-    text = text.replace("&gt;", ">")
-    text = text.replace("&nbsp;", " ")
-    text = text.replace("&quot;", '"')
+
     return text

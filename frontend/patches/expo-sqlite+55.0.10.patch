@@ -1,0 +1,33 @@
+diff --git a/node_modules/expo-sqlite/web/SQLiteModule.ts b/node_modules/expo-sqlite/web/SQLiteModule.ts
+index 717c987..e9326c9 100644
+--- a/node_modules/expo-sqlite/web/SQLiteModule.ts
++++ b/node_modules/expo-sqlite/web/SQLiteModule.ts
+@@ -13,15 +13,15 @@ import {
+   type SQLiteRunResult,
+ } from '../src/NativeStatement';
+ 
+-let worker: Worker | null = null;
++
+ let nextNativeDatabaseId = 0;
+ let nextNativeStatementId = 0;
+ let nextNativeSessionId = 0;
+ 
+ function getWorker(): Worker {
+-  if (!worker) {
+-    worker = new Worker(new URL('./worker', window.location.href));
+-    worker.addEventListener('message', (event) => {
++  if (!(globalThis as any).__expoSQLiteWorker) {
++    (globalThis as any).__expoSQLiteWorker = new Worker(new URL('./worker', window.location.href));
++    (globalThis as any).__expoSQLiteWorker.addEventListener('message', (event) => {
+       if (event.data.type === 'onDatabaseChange') {
+         // @ts-expect-error EventEmitter type for NativeModule is not inferred correctly on web.
+         SQLiteModuleInstance.emit(event.data.type, event.data.data);
+@@ -30,7 +30,7 @@ function getWorker(): Worker {
+       workerMessageHandler(event);
+     });
+   }
+-  return worker;
++  return (globalThis as any).__expoSQLiteWorker;
+ }
+ 
+ class NativeDatabase {

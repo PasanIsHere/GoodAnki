@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
   interpolate,
   useAnimatedStyle,
@@ -29,13 +29,19 @@ export default function SwipeOverlay({ translateX, translateY }: SwipeOverlayPro
   return (
     <>
       <Animated.View style={[styles.overlay, styles.againOverlay, againStyle]} pointerEvents="none">
-        <Text style={[styles.label, styles.againLabel]}>AGAIN</Text>
+        <View style={[styles.badge, styles.againBadge]}>
+          <Text style={[styles.label, styles.againLabel]}>AGAIN</Text>
+        </View>
       </Animated.View>
       <Animated.View style={[styles.overlay, styles.goodOverlay, goodStyle]} pointerEvents="none">
-        <Text style={[styles.label, styles.goodLabel]}>GOOD</Text>
+        <View style={[styles.badge, styles.goodBadge]}>
+          <Text style={[styles.label, styles.goodLabel]}>GOOD</Text>
+        </View>
       </Animated.View>
       <Animated.View style={[styles.overlay, styles.easyOverlay, easyStyle]} pointerEvents="none">
-        <Text style={[styles.label, styles.easyLabel]}>EASY</Text>
+        <View style={[styles.badge, styles.easyBadge]}>
+          <Text style={[styles.label, styles.easyLabel]}>EASY</Text>
+        </View>
       </Animated.View>
     </>
   );
@@ -44,32 +50,29 @@ export default function SwipeOverlay({ translateX, translateY }: SwipeOverlayPro
 const styles = StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    borderRadius: 16,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
   },
-  againOverlay: {
-    backgroundColor: 'rgba(239, 68, 68, 0.25)',
+  againOverlay: { backgroundColor: 'rgba(239, 68, 68, 0.15)' },
+  goodOverlay: { backgroundColor: 'rgba(34, 197, 94, 0.15)' },
+  easyOverlay: { backgroundColor: 'rgba(59, 130, 246, 0.15)' },
+  badge: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 3,
   },
-  goodOverlay: {
-    backgroundColor: 'rgba(34, 197, 94, 0.25)',
-  },
-  easyOverlay: {
-    backgroundColor: 'rgba(59, 130, 246, 0.25)',
-  },
+  againBadge: { borderColor: '#ef4444', backgroundColor: 'rgba(255,255,255,0.9)' },
+  goodBadge: { borderColor: '#22c55e', backgroundColor: 'rgba(255,255,255,0.9)' },
+  easyBadge: { borderColor: '#3b82f6', backgroundColor: 'rgba(255,255,255,0.9)' },
   label: {
-    fontSize: 32,
+    fontSize: 24,
     fontWeight: '800',
     letterSpacing: 2,
   },
-  againLabel: {
-    color: '#ef4444',
-  },
-  goodLabel: {
-    color: '#22c55e',
-  },
-  easyLabel: {
-    color: '#3b82f6',
-  },
+  againLabel: { color: '#ef4444' },
+  goodLabel: { color: '#22c55e' },
+  easyLabel: { color: '#3b82f6' },
 });

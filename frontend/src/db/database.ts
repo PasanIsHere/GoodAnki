@@ -2,15 +2,25 @@ import * as SQLite from 'expo-sqlite';
 
 const DB_NAME = 'goodanki.db';
 
-let db: SQLite.SQLiteDatabase | null = null;
+// Store on global to survive hot module replacement during development.
+// Without this, HMR re-evaluates this module and loses the reference to the
+// open connection, causing a second open attempt → OPFS lock conflict.
+const g = global as any;
 
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
-  if (db) return db;
-  db = await SQLite.openDatabaseAsync(DB_NAME);
-  await db.execAsync('PRAGMA journal_mode = WAL;');
-  await db.execAsync('PRAGMA foreign_keys = ON;');
-  await runMigrations(db);
-  return db;
+  if (g.__goodankiDb) return g.__goodankiDb;
+  // Promise lock prevents concurrent callers from opening multiple connections.
+  if (!g.__goodankiDbPromise) {
+    g.__goodankiDbPromise = (async () => {
+      const db = await SQLite.openDatabaseAsync(DB_NAME);
+      await db.execAsync('PRAGMA journal_mode = WAL;');
+      await db.execAsync('PRAGMA foreign_keys = ON;');
+      await runMigrations(db);
+      g.__goodankiDb = db;
+      return db;
+    })();
+  }
+  return g.__goodankiDbPromise;
 }
 
 async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {

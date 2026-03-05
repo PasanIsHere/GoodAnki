@@ -25,6 +25,16 @@ interface SwipeCardProps {
   index: number;
 }
 
+/** Pick a font size that fits the content well. */
+function cardFontSize(text: string): number {
+  const len = text.length;
+  if (len <= 6) return 48;   // Chinese characters, single words
+  if (len <= 20) return 30;
+  if (len <= 60) return 22;
+  if (len <= 150) return 18;
+  return 15;
+}
+
 export default function SwipeCard({ card, onSwipe, isTop, index }: SwipeCardProps) {
   const translateX = useSharedValue(0);
   const translateY = useSharedValue(0);
@@ -40,7 +50,7 @@ export default function SwipeCard({ card, onSwipe, isTop, index }: SwipeCardProp
       translateX.value = event.translationX;
       translateY.value = event.translationY;
     })
-    .onEnd((event) => {
+    .onEnd(() => {
       const absX = Math.abs(translateX.value);
       const absY = Math.abs(translateY.value);
 
@@ -93,8 +103,8 @@ export default function SwipeCard({ card, onSwipe, isTop, index }: SwipeCardProp
     };
   });
 
-  // Only the top card's translateX/Y are meaningful for overlay
-  // but we pass them through for stacked cards too (overlay won't show since values are 0)
+  const displayText = flipped ? card.back : card.front;
+  const fontSize = cardFontSize(displayText);
 
   return (
     <Animated.View
@@ -105,27 +115,36 @@ export default function SwipeCard({ card, onSwipe, isTop, index }: SwipeCardProp
       ]}
     >
       <GestureDetector gesture={panGesture}>
-        <Animated.View style={styles.card}>
+        <Animated.View style={[styles.card, flipped && styles.cardFlipped]}>
           <SwipeOverlay translateX={translateX} translateY={translateY} />
           <Pressable
-            onPress={() => setFlipped(!flipped)}
+            onPress={() => isTop && setFlipped(!flipped)}
             style={styles.cardContent}
           >
             <ScrollView
               contentContainerStyle={styles.scrollContent}
               showsVerticalScrollIndicator={false}
+              scrollEnabled={isTop}
             >
               {!flipped ? (
                 <View style={styles.sideContainer}>
-                  <Text style={styles.sideLabel}>FRONT</Text>
-                  <Text style={styles.cardText}>{card.front}</Text>
-                  <Text style={styles.tapHint}>Tap to flip</Text>
+                  <View style={styles.sideLabelRow}>
+                    <Text style={styles.sideLabel}>QUESTION</Text>
+                  </View>
+                  <Text style={[styles.cardText, { fontSize }]}>{card.front}</Text>
+                  <View style={styles.tapHintRow}>
+                    <Text style={styles.tapHint}>Tap to reveal answer</Text>
+                  </View>
                 </View>
               ) : (
                 <View style={styles.sideContainer}>
-                  <Text style={styles.sideLabel}>BACK</Text>
-                  <Text style={styles.cardText}>{card.back}</Text>
-                  <Text style={styles.tapHint}>Swipe to rate</Text>
+                  <View style={[styles.sideLabelRow, styles.answerLabelRow]}>
+                    <Text style={[styles.sideLabel, styles.answerLabel]}>ANSWER</Text>
+                  </View>
+                  <Text style={[styles.cardText, { fontSize }]}>{card.back}</Text>
+                  <View style={styles.tapHintRow}>
+                    <Text style={styles.tapHint}>Swipe to rate</Text>
+                  </View>
                 </View>
               )}
             </ScrollView>
@@ -140,48 +159,81 @@ const styles = StyleSheet.create({
   cardContainer: {
     position: 'absolute',
     width: SCREEN_WIDTH - 32,
-    height: SCREEN_HEIGHT * 0.55,
+    height: SCREEN_HEIGHT * 0.58,
   },
   card: {
     flex: 1,
     backgroundColor: '#fff',
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 8,
+    borderRadius: 20,
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    elevation: 10,
+    borderWidth: 1,
+    borderColor: '#e8f0fe',
+  },
+  cardFlipped: {
+    borderColor: '#d1fae5',
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.1,
   },
   cardContent: {
     flex: 1,
-    borderRadius: 16,
+    borderRadius: 20,
     overflow: 'hidden',
   },
   scrollContent: {
     flexGrow: 1,
-    justifyContent: 'center',
-    padding: 24,
+    justifyContent: 'space-between',
   },
   sideContainer: {
+    flex: 1,
     alignItems: 'center',
-    gap: 16,
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  sideLabelRow: {
+    width: '100%',
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+    alignItems: 'flex-start',
+  },
+  answerLabelRow: {
+    borderBottomColor: '#d1fae5',
   },
   sideLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    letterSpacing: 1.5,
-    color: '#9ca3af',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    color: '#93c5fd',
+  },
+  answerLabel: {
+    color: '#6ee7b7',
   },
   cardText: {
-    fontSize: 22,
     fontWeight: '500',
     textAlign: 'center',
     color: '#1f2937',
-    lineHeight: 32,
+    lineHeight: undefined,
+    flex: 1,
+    textAlignVertical: 'center',
+    paddingVertical: 16,
+  },
+  tapHintRow: {
+    width: '100%',
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
   },
   tapHint: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#d1d5db',
-    marginTop: 8,
+    fontWeight: '500',
   },
 });
