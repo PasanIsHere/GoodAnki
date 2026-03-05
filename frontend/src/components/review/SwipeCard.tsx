@@ -1,4 +1,4 @@
-import React, { useImperativeHandle, useState } from 'react';
+import React, { useCallback, useImperativeHandle, useState } from 'react';
 import {
   Dimensions,
   Image,
@@ -42,7 +42,6 @@ interface SwipeCardProps {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-/** Strip HTML to plain text, preserving newlines and removing style/script content. */
 function htmlToText(html: string): string {
   return html
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
@@ -56,7 +55,6 @@ function htmlToText(html: string): string {
     .trim();
 }
 
-/** True if the text contains any HTML tags (needs HTML rendering). */
 function hasHtml(text: string): boolean {
   return /<[a-z]/i.test(text);
 }
@@ -78,7 +76,7 @@ function extractImages(html: string): string[] {
   return imgs;
 }
 
-/** Pull the first <audio> src out of html, returning cleaned html and the src. */
+/** Extract the first <audio> src from html, returning cleaned html and src. */
 function extractAudio(html: string): { src: string | null; html: string } {
   let src: string | null = null;
   const cleaned = html.replace(/<audio[^>]+src="([^"]+)"[^>]*>(?:<\/audio>)?/gi, (_, s) => {
@@ -88,62 +86,74 @@ function extractAudio(html: string): { src: string | null; html: string } {
   return { src, html: cleaned };
 }
 
-// ── Content renderers ─────────────────────────────────────────────────────────
+// ── Web: iframe renderer ───────────────────────────────────────────────────────
 
-/** Web: HTML rendered with proper spacing and hierarchy */
-function WebContent({ html }: { html: string }) {
-  const wrapped = `<style>
-    *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,sans-serif}
-    body{white-space:pre-line;word-break:break-word}
-    img{max-width:100%;height:auto;border-radius:10px;display:block;margin:12px auto}
-    b,strong{font-weight:700;color:#111827}
-    u{text-decoration:underline}
-  </style>${html}`;
+/**
+ * On web, renders ALL content (images + audio) inside an <iframe srcdoc>.
+ * Benefits:
+ *  - data: URIs for images and audio work natively in an iframe
+ *  - Audio controls are native browser UI — not intercepted by RNGF gesture handler
+ *  - No percentage-height CSS quirks (iframe fills parent via flex)
+ * Tap-to-flip is wired via window.postMessage from inside the iframe.
+ */
+function buildIframeDoc(html: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,sans-serif}
+  html,body{background:#fff;color:#111827;text-align:center;white-space:pre-line;word-break:break-word;-webkit-text-size-adjust:100%}
+  body{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:20px 24px;gap:10px;font-size:17px;line-height:1.6;cursor:pointer}
+  img{max-width:100%;height:auto;border-radius:10px;display:block;margin:6px auto}
+  audio{width:100%;margin:6px 0;border-radius:8px;cursor:auto}
+  b,strong{font-weight:700}
+  u{text-decoration:underline}
+  i,em{font-style:italic}
+</style>
+</head>
+<body>
+${html}
+<script>
+document.body.addEventListener('click',function(e){
+  var t=e.target;
+  while(t){
+    var tag=t.tagName&&t.tagName.toUpperCase();
+    if(tag==='AUDIO'||tag==='VIDEO'||tag==='BUTTON'||tag==='A'||tag==='INPUT'||t.controls){return;}
+    t=t.parentElement;
+  }
+  window.parent.postMessage('__gk_flip__','*');
+});
+</script>
+</body>
+</html>`;
+}
+
+function IframeContent({ html, onFlip }: { html: string; onFlip: () => void }) {
+  // Listen for flip messages from the iframe
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = (e: MessageEvent) => {
+      if (e.data === '__gk_flip__') onFlip();
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [onFlip]);
+
+  const doc = buildIframeDoc(html);
+
   return (
-    <div
-      style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: '100%',
-        height: '100%',
-        padding: '24px 28px',
-        boxSizing: 'border-box',
-        overflowY: 'auto',
-        color: '#111827',
-        textAlign: 'center',
-        lineHeight: '1.6',
-        wordBreak: 'break-word',
-        whiteSpace: 'pre-line',
-      }}
-      // @ts-ignore
-      dangerouslySetInnerHTML={{ __html: wrapped }}
+    // @ts-ignore — iframe is a valid HTML element on web
+    <iframe
+      srcDoc={doc}
+      style={{ flex: 1, border: 'none', width: '100%', display: 'block' }}
     />
   );
 }
 
-/** Audio player — rendered outside the flip Pressable so controls work. */
-function AudioPlayer({ src }: { src: string }) {
-  if (Platform.OS === 'web') {
-    return (
-      // @ts-ignore
-      <div style={{ padding: '0 24px 14px', width: '100%', boxSizing: 'border-box' }}>
-        {/* @ts-ignore */}
-        <audio controls src={src} style={{ width: '100%', borderRadius: 8 }} />
-      </div>
-    );
-  }
-  return (
-    <View style={richStyles.audioChip}>
-      <Text style={richStyles.audioIcon}>🔊</Text>
-      <Text style={richStyles.audioText}>Audio clip</Text>
-    </View>
-  );
-}
+// ── Native: image + text renderer ─────────────────────────────────────────────
 
-/** Native: images + text sections with visual hierarchy */
 function NativeContent({ html }: { html: string }) {
   const images = extractImages(html);
   const rawText = htmlToText(html);
@@ -174,7 +184,8 @@ function NativeContent({ html }: { html: string }) {
   );
 }
 
-/** Plain text with section hierarchy: first line big, rest as detail rows */
+// ── Plain text renderer ────────────────────────────────────────────────────────
+
 function PlainContent({ text }: { text: string }) {
   const sections = text.split('\n').map(s => s.trim()).filter(Boolean);
   if (sections.length === 0) return null;
@@ -199,13 +210,15 @@ function PlainContent({ text }: { text: string }) {
   );
 }
 
-/** Routes to the correct renderer. Audio has already been extracted by SwipeCard. */
-function CardContent({ text }: { text: string }) {
-  if (hasHtml(text)) {
-    if (Platform.OS === 'web') return <WebContent html={text} />;
-    return <NativeContent html={text} />;
-  }
-  return <PlainContent text={text} />;
+// ── Audio chip (native only — informational, no playback without expo-av) ─────
+
+function AudioChip() {
+  return (
+    <View style={richStyles.audioChip}>
+      <Text style={richStyles.audioIcon}>🔊</Text>
+      <Text style={richStyles.audioText}>Audio clip</Text>
+    </View>
+  );
 }
 
 // ── SwipeCard ─────────────────────────────────────────────────────────────────
@@ -215,6 +228,10 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
     const translateX = useSharedValue(0);
     const translateY = useSharedValue(0);
     const [flipped, setFlipped] = useState(false);
+
+    const handleFlip = useCallback(() => {
+      if (isTop) setFlipped(f => !f);
+    }, [isTop]);
 
     useImperativeHandle(ref, () => ({
       swipe(direction: SwipeDirection) {
@@ -228,7 +245,6 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
           );
           translateY.value = withTiming(translateY.value * 1.5, { duration: 280 });
         }
-        // Delay state update to let animation play out
         setTimeout(() => onSwipe(direction), 260);
       },
     }));
@@ -282,18 +298,20 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
         1,
         (Math.abs(translateX.value) + Math.abs(translateY.value)) / SWIPE_X_THRESHOLD
       );
-      const scale = interpolate(
-        progress,
-        [0, 1],
-        [1 - index * 0.045, 1 - (index - 1) * 0.045]
-      );
+      const scale = interpolate(progress, [0, 1], [1 - index * 0.045, 1 - (index - 1) * 0.045]);
       const yOffset = interpolate(progress, [0, 1], [index * 10, (index - 1) * 10]);
       return { transform: [{ scale }, { translateY: yOffset }] };
     });
 
     const rawDisplay = flipped ? card.back : card.front;
-    // Extract audio so it can be rendered outside the flip Pressable
-    const { src: audioSrc, html: displayText } = extractAudio(rawDisplay);
+    const isWeb = Platform.OS === 'web';
+
+    // On native: extract audio for the chip; on web: include audio in the iframe
+    const { src: audioSrc, html: nativeDisplay } = !isWeb
+      ? extractAudio(rawDisplay)
+      : { src: null, html: '' };
+
+    const isHtml = hasHtml(rawDisplay);
 
     return (
       <Animated.View style={[styles.wrap, { zIndex: 10 - index }, cardAnimStyle]}>
@@ -301,29 +319,46 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
           <View style={styles.card}>
             <SwipeOverlay translateX={translateX} translateY={translateY} />
 
-            {/* Header label */}
-            <View style={[styles.header, flipped && styles.headerAnswer]}>
+            {/* Header — always tappable to flip */}
+            <Pressable
+              onPress={handleFlip}
+              style={[styles.header, flipped && styles.headerAnswer]}
+            >
               <View style={[styles.headerDot, flipped && styles.headerDotAnswer]} />
               <Text style={[styles.headerLabel, flipped && styles.headerLabelAnswer]}>
                 {flipped ? 'ANSWER' : 'QUESTION'}
               </Text>
-            </View>
-
-            {/* Audio outside Pressable so controls don't trigger card flip */}
-            {audioSrc && <AudioPlayer src={audioSrc} />}
-
-            {/* Card content — tap to flip */}
-            <Pressable
-              onPress={() => isTop && setFlipped((f) => !f)}
-              style={styles.contentArea}
-            >
-              <CardContent text={displayText} />
+              <View style={styles.headerSpacer} />
+              <Text style={[styles.headerFlipHint, flipped && styles.headerFlipHintAnswer]}>
+                tap to flip
+              </Text>
             </Pressable>
 
-            {/* Footer hint */}
+            {/* Native audio chip (shown above content, outside Pressable) */}
+            {!isWeb && audioSrc && <AudioChip />}
+
+            {/* Content area */}
+            {isWeb && isHtml ? (
+              // Web + HTML: iframe renders images and audio natively
+              // Tap-to-flip is handled inside the iframe via postMessage
+              <View style={styles.contentArea}>
+                <IframeContent html={rawDisplay} onFlip={handleFlip} />
+              </View>
+            ) : (
+              // Native (or web plain text): Pressable for tap-to-flip
+              <Pressable onPress={handleFlip} style={styles.contentArea}>
+                {isHtml ? (
+                  <NativeContent html={nativeDisplay} />
+                ) : (
+                  <PlainContent text={rawDisplay} />
+                )}
+              </Pressable>
+            )}
+
+            {/* Footer */}
             <View style={styles.footer}>
               <Text style={styles.footerHint}>
-                {flipped ? 'swipe to rate' : 'tap to flip'}
+                {flipped ? 'swipe to rate' : 'tap header or content to flip'}
               </Text>
             </View>
           </View>
@@ -344,28 +379,26 @@ const richStyles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 28,
     paddingVertical: 24,
-    gap: 0,
   },
   image: {
     width: CARD_WIDTH - 56,
-    height: 180,
+    height: 200,
     borderRadius: 12,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   audioChip: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 8,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    marginHorizontal: 24,
+    marginHorizontal: 20,
     marginBottom: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     backgroundColor: '#eff6ff',
     borderRadius: 24,
     borderWidth: 1,
     borderColor: '#bfdbfe',
-    alignSelf: 'stretch',
-    justifyContent: 'center',
   },
   audioIcon: { fontSize: 18 },
   audioText: { fontSize: 14, color: '#3b82f6', fontWeight: '600' },
@@ -414,7 +447,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 20,
-    paddingVertical: 14,
+    paddingVertical: 13,
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
     backgroundColor: '#fafbff',
@@ -441,19 +474,29 @@ const styles = StyleSheet.create({
   headerLabelAnswer: {
     color: '#4ade80',
   },
+  headerSpacer: { flex: 1 },
+  headerFlipHint: {
+    fontSize: 10,
+    color: '#cbd5e1',
+    fontWeight: '500',
+    letterSpacing: 0.3,
+  },
+  headerFlipHintAnswer: {
+    color: '#bbf7d0',
+  },
   contentArea: {
     flex: 1,
   },
   footer: {
-    paddingVertical: 13,
+    paddingVertical: 11,
     alignItems: 'center',
     borderTopWidth: 1,
     borderTopColor: '#f1f5f9',
   },
   footerHint: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#cbd5e1',
     fontWeight: '500',
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
   },
 });
