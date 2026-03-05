@@ -47,11 +47,11 @@ export async function getDueCards(deckId: string, limit: number = 100): Promise<
   return combined.slice(0, limit);
 }
 
-export async function getCardsByDeck(deckId: string): Promise<Card[]> {
+export async function getCardsByDeck(deckId: string, limit = 200): Promise<Card[]> {
   const db = await getDatabase();
   return db.getAllAsync<Card>(
-    'SELECT * FROM cards WHERE deck_id = ? ORDER BY created_at ASC',
-    [deckId]
+    'SELECT * FROM cards WHERE deck_id = ? ORDER BY created_at ASC LIMIT ?',
+    [deckId, limit]
   );
 }
 

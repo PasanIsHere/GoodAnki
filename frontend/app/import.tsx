@@ -258,10 +258,10 @@ export default function ImportScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f9fafb' },
+  screen: { flex: 1, backgroundColor: '#f0f4ff' },
   centeredScreen: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#f0f4ff',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 32,
@@ -358,7 +358,7 @@ const styles = StyleSheet.create({
   samplesContainer: { padding: 12, paddingTop: 8 },
   samplesLabel: { fontSize: 11, color: '#9ca3af', fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 },
   sampleCard: {
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#f0f4ff',
     borderRadius: 8,
     marginBottom: 6,
     overflow: 'hidden',

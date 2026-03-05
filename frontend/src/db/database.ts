@@ -15,6 +15,7 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
       const db = await SQLite.openDatabaseAsync(DB_NAME);
       await db.execAsync('PRAGMA journal_mode = WAL;');
       await db.execAsync('PRAGMA foreign_keys = ON;');
+      await db.execAsync('PRAGMA cache_size = -8000;'); // 8 MB page cache
       await runMigrations(db);
       g.__goodankiDb = db;
       return db;
@@ -79,6 +80,7 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(due);
     CREATE INDEX IF NOT EXISTS idx_cards_state ON cards(state);
     CREATE INDEX IF NOT EXISTS idx_review_log_card_id ON review_log(card_id);
+    CREATE INDEX IF NOT EXISTS idx_cards_deck_state_due ON cards(deck_id, state, due);
   `);
 }
 

@@ -38,6 +38,40 @@ export async function getAllDecksWithCounts(): Promise<DeckWithCounts[]> {
   }));
 }
 
+export async function getDeckWithCounts(id: string): Promise<DeckWithCounts | null> {
+  const db = await getDatabase();
+  const now = new Date().toISOString();
+  const today = now.slice(0, 10);
+
+  const rows = await db.getAllAsync<DeckWithCounts & { new_today: number }>(`
+    SELECT
+      d.*,
+      COALESCE(tc.total_cards, 0) as total_cards,
+      COALESCE(dc.due_count, 0) as due_count,
+      COALESCE(nc.new_count, 0) as new_count,
+      COALESCE(ds.new_cards_studied, 0) as new_today
+    FROM decks d
+    LEFT JOIN (
+      SELECT COUNT(*) as total_cards FROM cards WHERE deck_id = ?
+    ) tc ON 1=1
+    LEFT JOIN (
+      SELECT COUNT(*) as due_count FROM cards WHERE deck_id = ? AND due <= ? AND state != 0
+    ) dc ON 1=1
+    LEFT JOIN (
+      SELECT COUNT(*) as new_count FROM cards WHERE deck_id = ? AND state = 0
+    ) nc ON 1=1
+    LEFT JOIN daily_stats ds ON ds.deck_id = d.id AND ds.date = ?
+    WHERE d.id = ?
+  `, [id, id, now, id, today, id]);
+
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    ...row,
+    new_count: Math.max(0, Math.min(row.new_count, row.new_cards_per_day - row.new_today)),
+  };
+}
+
 export async function getDeck(id: string): Promise<Deck | null> {
   const db = await getDatabase();
   return db.getFirstAsync<Deck>('SELECT * FROM decks WHERE id = ?', [id]);

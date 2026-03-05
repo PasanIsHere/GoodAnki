@@ -28,11 +28,14 @@ def parse_apkg(file_path: str | Path) -> dict[str, Any]:
             zf.extractall(tmpdir)
             media_dict = _load_media(zf)
 
-        # Find the SQLite database
-        db_path = tmpdir / "collection.anki21"
-        if not db_path.exists():
-            db_path = tmpdir / "collection.anki2"
-        if not db_path.exists():
+        # Find the SQLite database (prefer newer formats)
+        db_path = None
+        for name in ("collection.anki21b", "collection.anki21", "collection.anki2"):
+            candidate = tmpdir / name
+            if candidate.exists():
+                db_path = candidate
+                break
+        if db_path is None:
             raise ValueError("No collection database found in .apkg file")
 
         conn = sqlite3.connect(str(db_path))
@@ -66,7 +69,7 @@ def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dic
     models = json.loads(col_row["models"])
     decks_config = json.loads(col_row["decks"])
 
-    # Build model map: model_id -> { name, fields, templates }
+    # Build model map: model_id -> { name, type, css, fields, templates }
     model_map: dict[str, dict] = {}
     for mid, model in models.items():
         field_names = [f["name"] for f in model["flds"]]
@@ -74,7 +77,13 @@ def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dic
             {"name": t["name"], "qfmt": t["qfmt"], "afmt": t["afmt"]}
             for t in model["tmpls"]
         ]
-        model_map[mid] = {"name": model["name"], "fields": field_names, "templates": templates}
+        model_map[mid] = {
+            "name": model["name"],
+            "type": model.get("type", 0),  # 0=Standard, 1=Cloze
+            "css": model.get("css", ""),
+            "fields": field_names,
+            "templates": templates,
+        }
 
     deck_map: dict[str, str] = {did: d["name"] for did, d in decks_config.items()}
 
@@ -99,9 +108,12 @@ def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dic
             for i, name in enumerate(model["fields"])
         }
 
-        front, back = _extract_front_back(fields_dict, model, media_dict)
+        if model["type"] == 1:  # Cloze
+            note_cards = _extract_cloze_cards(fields_dict, model, media_dict)
+        else:
+            note_cards = _extract_standard_cards(fields_dict, model, media_dict)
 
-        if not front and not back:
+        if not note_cards:
             continue
 
         did = note_to_deck.get(nid, "1")
@@ -110,7 +122,10 @@ def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dic
         if did not in decks_data:
             decks_data[did] = {"name": deck_name, "description": "", "cards": []}
 
-        decks_data[did]["cards"].append({"front": front, "back": back, "tags": tags})
+        for front, back in note_cards:
+            if not front and not back:
+                continue
+            decks_data[did]["cards"].append({"front": front, "back": back, "tags": tags})
 
     result_decks = list(decks_data.values())
     return {
@@ -119,78 +134,173 @@ def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dic
     }
 
 
-def _extract_field_refs(template_str: str) -> list[str]:
-    """Extract {{FieldName}} references, excluding special directives."""
-    special = {"FrontSide", "Tags", "Type", "Deck", "Subdeck", "Card", "CardFlag"}
-    matches = re.findall(r"\{\{(?![#/\^!])([^}]+)\}\}", template_str)
-    return [m.strip() for m in matches if m.strip() and m.strip() not in special]
+def _render_template(template: str, fields: dict[str, str]) -> str:
+    """Render an Anki template string against a fields dict.
+
+    Handles:
+    - {{#Field}}...{{/Field}}  — include block only when Field is non-empty
+    - {{^Field}}...{{/Field}}  — include block only when Field is empty
+    - {{Field}} → field value substitution
+    - Strips remaining {{...}} directives
+    """
+    # Conditional blocks (DOTALL so content can span lines)
+    def replace_conditional(m: re.Match) -> str:
+        field_name = m.group(1).strip()
+        content = m.group(2)
+        return content if fields.get(field_name, "").strip() else ""
+
+    def replace_negated(m: re.Match) -> str:
+        field_name = m.group(1).strip()
+        content = m.group(2)
+        return "" if fields.get(field_name, "").strip() else content
+
+    text = re.sub(
+        r"\{\{#([^}]+)\}\}(.*?)\{\{/\1\}\}",
+        replace_conditional,
+        template,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\{\{\^([^}]+)\}\}(.*?)\{\{/\1\}\}",
+        replace_negated,
+        text,
+        flags=re.DOTALL,
+    )
+
+    # Field substitution (skip special directives: #, /, ^, !, and named specials)
+    _SPECIAL = {"FrontSide", "Tags", "Type", "Deck", "Subdeck", "Card", "CardFlag"}
+
+    def replace_field(m: re.Match) -> str:
+        name = m.group(1).strip()
+        if name in _SPECIAL:
+            return m.group(0)
+        return fields.get(name, "")
+
+    text = re.sub(r"\{\{(?![#/^!])([^}]+)\}\}", replace_field, text)
+
+    # Strip any remaining directives
+    text = re.sub(r"\{\{[^}]+\}\}", "", text)
+    return text
 
 
-def _extract_front_back(
+def _inject_css(html: str, css: str) -> str:
+    """Prepend a <style> block to html if css is non-empty."""
+    if not css or not css.strip():
+        return html
+    return f"<style>{css}</style>{html}"
+
+
+def _extract_standard_cards(
     fields: dict[str, str],
     model: dict,
     media_dict: dict[str, bytes],
-) -> tuple[str, str]:
-    """Extract front and back content from note fields.
+) -> list[tuple[str, str]]:
+    """Generate one (front, back) pair per template for a standard note type.
 
     Returns plain text for text-only cards, or HTML strings (with inline
     data-URI media) when the card contains images or audio.
+    Falls back to heuristic extraction when no templates produce output.
     """
-    # 1. Standard naming
-    for front_key in ("Front", "front", "Question", "question"):
-        if front_key in fields and fields[front_key].strip():
-            for back_key in ("Back", "back", "Answer", "answer"):
-                if back_key in fields:
-                    return (
-                        _process_field(fields[front_key], media_dict),
-                        _process_field(fields[back_key], media_dict),
-                    )
+    css = model.get("css", "")
+    results: list[tuple[str, str]] = []
 
-    # 2. Template-based: pick the candidate whose front is shortest (most compact)
-    candidates: list[tuple[str, str]] = []
     for tmpl in model.get("templates", []):
-        front_refs = _extract_field_refs(tmpl.get("qfmt", ""))
-        back_refs = _extract_field_refs(tmpl.get("afmt", ""))
+        qfmt = tmpl.get("qfmt", "")
+        afmt = tmpl.get("afmt", "")
 
-        front_val = ""
-        used_front_refs: set[str] = set()
-        for ref in front_refs:
-            raw = fields.get(ref, "").strip()
-            if raw:
-                front_val = _process_field(raw, media_dict)
-                used_front_refs.add(ref)
-                break
+        front_raw = _render_template(qfmt, fields)
+        front_processed = _process_field(front_raw, media_dict)
 
-        if not front_val:
-            continue
+        if not _strip_html(front_processed).strip():
+            continue  # skip templates that produce an empty front
 
-        back_parts = []
-        for ref in back_refs:
-            if ref in used_front_refs:
-                continue
-            raw = fields.get(ref, "").strip()
-            if raw:
-                back_parts.append(_process_field(raw, media_dict))
+        # Resolve {{FrontSide}} in the answer template
+        back_raw = _render_template(afmt, fields)
+        back_raw = back_raw.replace("{{FrontSide}}", front_raw)
+        back_processed = _process_field(back_raw, media_dict)
 
-        back_val = "\n".join(back_parts)
-        if back_val:
-            candidates.append((front_val, back_val))
+        # Inject model CSS when there is HTML content
+        if re.search(r"<[a-z]", front_processed, re.IGNORECASE):
+            front_processed = _inject_css(front_processed, css)
+        if re.search(r"<[a-z]", back_processed, re.IGNORECASE):
+            back_processed = _inject_css(back_processed, css)
 
-    if candidates:
-        # Prefer card where the front is shortest plain-text (word/character, not long definition)
-        candidates.sort(key=lambda pair: len(_strip_html(pair[0])))
-        return candidates[0]
+        results.append((front_processed, back_processed))
 
-    # 3. Fallback: first non-empty field as front, rest as back
+    if results:
+        return results
+
+    # Fallback: first non-empty field as front, rest as back
     non_empty = [(name, val) for name, val in fields.items() if val.strip()]
     if len(non_empty) >= 2:
         front = _process_field(non_empty[0][1], media_dict)
         back_parts = [_process_field(v, media_dict) for _, v in non_empty[1:] if v.strip()]
-        return front, "\n".join(back_parts)
+        return [(front, "\n".join(back_parts))]
     elif len(non_empty) == 1:
-        return _process_field(non_empty[0][1], media_dict), ""
+        return [(_process_field(non_empty[0][1], media_dict), "")]
 
-    return "", ""
+    return []
+
+
+def _extract_cloze_cards(
+    fields: dict[str, str],
+    model: dict,
+    media_dict: dict[str, bytes],
+) -> list[tuple[str, str]]:
+    """Generate one (front, back) card per cloze number found in the note."""
+    css = model.get("css", "")
+    results: list[tuple[str, str]] = []
+
+    # Find the cloze field name from the template: {{cloze:FieldName}}
+    cloze_field: str | None = None
+    for tmpl in model.get("templates", []):
+        m = re.search(r"\{\{cloze:([^}]+)\}\}", tmpl.get("qfmt", ""))
+        if m:
+            cloze_field = m.group(1).strip()
+            break
+
+    if cloze_field is None:
+        # Fall back to first field
+        cloze_field = next(iter(fields), None)
+    if cloze_field is None:
+        return []
+
+    cloze_text = fields.get(cloze_field, "")
+
+    # Collect all cloze ordinal numbers present in the field
+    ordinals = sorted(set(int(n) for n in re.findall(r"\{\{c(\d+)::", cloze_text)))
+    if not ordinals:
+        return []
+
+    def render_cloze(text: str, ordinal: int, reveal: bool) -> str:
+        """For a given ordinal, either hide (front) or reveal (back) the answer."""
+
+        def replace(m: re.Match) -> str:
+            n = int(m.group(1))
+            answer = m.group(2)
+            hint = m.group(3) or "..."
+            if n == ordinal:
+                return f"[{hint}]" if not reveal else f"<b><u>{answer}</u></b>"
+            return answer  # other cloze deletions show their answer
+
+        # Match {{cN::answer}} and {{cN::answer::hint}}
+        return re.sub(r"\{\{c(\d+)::([^:}]+)(?:::([^}]+))?\}\}", replace, text)
+
+    for n in ordinals:
+        front_text = render_cloze(cloze_text, n, reveal=False)
+        back_text = render_cloze(cloze_text, n, reveal=True)
+
+        front_processed = _process_field(front_text, media_dict)
+        back_processed = _process_field(back_text, media_dict)
+
+        if re.search(r"<[a-z]", front_processed, re.IGNORECASE):
+            front_processed = _inject_css(front_processed, css)
+        if re.search(r"<[a-z]", back_processed, re.IGNORECASE):
+            back_processed = _inject_css(back_processed, css)
+
+        results.append((front_processed, back_processed))
+
+    return results
 
 
 # ── Field processing ──────────────────────────────────────────────────────────
@@ -287,8 +397,8 @@ def _light_clean_html(text: str) -> str:
     # Convert block elements to line breaks
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</?(?:div|p|hr|li|ul|ol)[^>]*>", "\n", text, flags=re.IGNORECASE)
-    # Strip all tags EXCEPT img and audio
-    text = re.sub(r"<(?!/?(?:img|audio)\b)[^>]+>", "", text, flags=re.IGNORECASE)
+    # Strip all tags EXCEPT img, audio, and basic inline formatting
+    text = re.sub(r"<(?!/?(?:img|audio|b|u|i|strong|em)\b)[^>]+>", "", text, flags=re.IGNORECASE)
     # Unescape HTML entities
     text = html_lib.unescape(text)
     # Normalize whitespace (but keep newlines around media)

@@ -59,7 +59,11 @@ export default function SettingsScreen() {
 
 function SettingsRow({ label, onPress, destructive }: { label: string; onPress: () => void; destructive?: boolean }) {
   return (
-    <Pressable style={styles.row} onPress={onPress}>
+    <Pressable
+      style={({ pressed }) => [styles.row, pressed && { opacity: 0.85 }]}
+      onPress={onPress}
+      android_ripple={{ color: '#f3f4f6' }}
+    >
       <Text style={[styles.rowLabel, destructive && styles.destructiveText]}>{label}</Text>
       <Text style={styles.chevron}>›</Text>
     </Pressable>
@@ -67,22 +71,35 @@ function SettingsRow({ label, onPress, destructive }: { label: string; onPress: 
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f9fafb' },
-  content: { padding: 16 },
-  section: { marginBottom: 24 },
-  sectionTitle: { fontSize: 12, fontWeight: '600', color: '#6b7280', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5, paddingHorizontal: 4 },
+  container: { flex: 1, backgroundColor: '#f0f4ff' },
+  content: { padding: 16, paddingBottom: 32 },
+  section: { marginBottom: 20 },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#9ca3af',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    paddingHorizontal: 4,
+  },
   row: {
     backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 14,
+    borderRadius: 12,
+    padding: 16,
     marginBottom: 2,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 1,
   },
-  rowLabel: { fontSize: 16, color: '#1f2937' },
-  rowValue: { fontSize: 14, color: '#6b7280' },
-  chevron: { fontSize: 20, color: '#9ca3af' },
+  rowLabel: { fontSize: 15, color: '#1f2937', fontWeight: '500' },
+  rowValue: { fontSize: 14, color: '#9ca3af' },
+  chevron: { fontSize: 18, color: '#d1d5db' },
   destructiveText: { color: '#ef4444' },
-  version: { textAlign: 'center', fontSize: 13, color: '#9ca3af', marginTop: 32 },
+  version: { textAlign: 'center', fontSize: 12, color: '#d1d5db', marginTop: 40 },
 });

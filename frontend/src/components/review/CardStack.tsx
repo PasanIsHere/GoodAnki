@@ -14,7 +14,7 @@ interface CardStackProps {
 
 const MAX_VISIBLE = 3;
 
-const CardStack = React.forwardRef<CardStackHandle, CardStackProps>(
+const CardStack = React.memo(React.forwardRef<CardStackHandle, CardStackProps>(
   function CardStack({ cards, onSwipe }, ref) {
     const topCardRef = useRef<SwipeCardHandle>(null);
 
@@ -53,7 +53,7 @@ const CardStack = React.forwardRef<CardStackHandle, CardStackProps>(
       </View>
     );
   }
-);
+));
 
 export default CardStack;
 

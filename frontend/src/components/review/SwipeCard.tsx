@@ -42,16 +42,26 @@ interface SwipeCardProps {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-function stripHtml(text: string): string {
-  return text.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+/** Strip HTML to plain text, preserving newlines and removing style/script content. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(div|p|li|h[1-6])[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
-function hasMedia(text: string): boolean {
-  return /<img\s|<audio\s/i.test(text);
+/** True if the text contains any HTML tags (needs HTML rendering). */
+function hasHtml(text: string): boolean {
+  return /<[a-z]/i.test(text);
 }
 
-function cardFontSize(plain: string): number {
-  const len = plain.length;
+function cardFontSize(len: number): number {
   if (len <= 4) return 52;
   if (len <= 10) return 38;
   if (len <= 30) return 26;
@@ -68,20 +78,26 @@ function extractImages(html: string): string[] {
   return imgs;
 }
 
-function extractAudioSrc(html: string): string | null {
-  const m = html.match(/<audio[^>]+src="([^"]+)"[^>]*>/i);
-  return m ? m[1] : null;
+/** Pull the first <audio> src out of html, returning cleaned html and the src. */
+function extractAudio(html: string): { src: string | null; html: string } {
+  let src: string | null = null;
+  const cleaned = html.replace(/<audio[^>]+src="([^"]+)"[^>]*>(?:<\/audio>)?/gi, (_, s) => {
+    if (!src) src = s;
+    return '';
+  });
+  return { src, html: cleaned };
 }
 
 // ── Content renderers ─────────────────────────────────────────────────────────
 
-/** Web: full HTML rendered in a div with proper media CSS */
-function WebContent({ html, fontSize }: { html: string; fontSize: number }) {
+/** Web: HTML rendered with proper spacing and hierarchy */
+function WebContent({ html }: { html: string }) {
   const wrapped = `<style>
     *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,sans-serif}
-    img{max-width:100%;height:auto;border-radius:10px;display:block;margin:8px auto}
-    audio{width:100%;margin:10px 0;border-radius:8px}
-    p,div{line-height:1.5}
+    body{white-space:pre-line;word-break:break-word}
+    img{max-width:100%;height:auto;border-radius:10px;display:block;margin:12px auto}
+    b,strong{font-weight:700;color:#111827}
+    u{text-decoration:underline}
   </style>${html}`;
   return (
     <div
@@ -93,15 +109,14 @@ function WebContent({ html, fontSize }: { html: string; fontSize: number }) {
         justifyContent: 'center',
         width: '100%',
         height: '100%',
-        padding: '20px',
+        padding: '24px 28px',
         boxSizing: 'border-box',
         overflowY: 'auto',
-        fontSize: `${fontSize}px`,
         color: '#111827',
-        fontWeight: '600',
         textAlign: 'center',
-        lineHeight: '1.5',
+        lineHeight: '1.6',
         wordBreak: 'break-word',
+        whiteSpace: 'pre-line',
       }}
       // @ts-ignore
       dangerouslySetInnerHTML={{ __html: wrapped }}
@@ -109,55 +124,88 @@ function WebContent({ html, fontSize }: { html: string; fontSize: number }) {
   );
 }
 
-/** Native: parse HTML, render Image components + audio chip + text */
-function NativeContent({ html, fontSize }: { html: string; fontSize: number }) {
+/** Audio player — rendered outside the flip Pressable so controls work. */
+function AudioPlayer({ src }: { src: string }) {
+  if (Platform.OS === 'web') {
+    return (
+      // @ts-ignore
+      <div style={{ padding: '0 24px 14px', width: '100%', boxSizing: 'border-box' }}>
+        {/* @ts-ignore */}
+        <audio controls src={src} style={{ width: '100%', borderRadius: 8 }} />
+      </div>
+    );
+  }
+  return (
+    <View style={richStyles.audioChip}>
+      <Text style={richStyles.audioIcon}>🔊</Text>
+      <Text style={richStyles.audioText}>Audio clip</Text>
+    </View>
+  );
+}
+
+/** Native: images + text sections with visual hierarchy */
+function NativeContent({ html }: { html: string }) {
   const images = extractImages(html);
-  const audioSrc = extractAudioSrc(html);
-  const text = stripHtml(html);
+  const rawText = htmlToText(html);
+  const sections = rawText.split('\n').map(s => s.trim()).filter(Boolean);
+  const mainSection = sections[0] ?? '';
+  const details = sections.slice(1);
+  const mainFontSize = cardFontSize(mainSection.length);
 
   return (
-    <ScrollView
-      contentContainerStyle={richStyles.scroll}
-      showsVerticalScrollIndicator={false}
-    >
-      {images.map((src, i) => (
-        <Image
-          key={i}
-          source={{ uri: src }}
-          style={richStyles.image}
-          resizeMode="contain"
-        />
+    <ScrollView contentContainerStyle={richStyles.scroll} showsVerticalScrollIndicator={false}>
+      {images.map((imgSrc, i) => (
+        <Image key={i} source={{ uri: imgSrc }} style={richStyles.image} resizeMode="contain" />
       ))}
-      {audioSrc && (
-        <View style={richStyles.audioChip}>
-          <Text style={richStyles.audioIcon}>🔊</Text>
-          <Text style={richStyles.audioText}>Audio</Text>
-        </View>
-      )}
-      {text ? (
-        <Text style={[richStyles.text, { fontSize, lineHeight: fontSize * 1.45 }]}>
-          {text}
+      {mainSection ? (
+        <Text style={[richStyles.mainText, { fontSize: mainFontSize, lineHeight: mainFontSize * 1.4 }]}>
+          {mainSection}
         </Text>
       ) : null}
+      {details.length > 0 && (
+        <>
+          <View style={richStyles.divider} />
+          {details.map((line, i) => (
+            <Text key={i} style={richStyles.detailText}>{line}</Text>
+          ))}
+        </>
+      )}
     </ScrollView>
   );
 }
 
-function CardContent({ text }: { text: string }) {
-  const plain = hasMedia(text) ? stripHtml(text) : text;
-  const fontSize = cardFontSize(plain);
+/** Plain text with section hierarchy: first line big, rest as detail rows */
+function PlainContent({ text }: { text: string }) {
+  const sections = text.split('\n').map(s => s.trim()).filter(Boolean);
+  if (sections.length === 0) return null;
+  const mainSection = sections[0];
+  const details = sections.slice(1);
+  const mainFontSize = cardFontSize(mainSection.length);
 
-  if (hasMedia(text)) {
-    if (Platform.OS === 'web') return <WebContent html={text} fontSize={fontSize} />;
-    return <NativeContent html={text} fontSize={fontSize} />;
-  }
   return (
-    <View style={styles.plainWrap}>
-      <Text style={[styles.plainText, { fontSize, lineHeight: fontSize * 1.45 }]}>
-        {text}
+    <ScrollView contentContainerStyle={richStyles.scroll} showsVerticalScrollIndicator={false}>
+      <Text style={[richStyles.mainText, { fontSize: mainFontSize, lineHeight: mainFontSize * 1.4 }]}>
+        {mainSection}
       </Text>
-    </View>
+      {details.length > 0 && (
+        <>
+          <View style={richStyles.divider} />
+          {details.map((line, i) => (
+            <Text key={i} style={richStyles.detailText}>{line}</Text>
+          ))}
+        </>
+      )}
+    </ScrollView>
   );
+}
+
+/** Routes to the correct renderer. Audio has already been extracted by SwipeCard. */
+function CardContent({ text }: { text: string }) {
+  if (hasHtml(text)) {
+    if (Platform.OS === 'web') return <WebContent html={text} />;
+    return <NativeContent html={text} />;
+  }
+  return <PlainContent text={text} />;
 }
 
 // ── SwipeCard ─────────────────────────────────────────────────────────────────
@@ -243,7 +291,9 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
       return { transform: [{ scale }, { translateY: yOffset }] };
     });
 
-    const displayText = flipped ? card.back : card.front;
+    const rawDisplay = flipped ? card.back : card.front;
+    // Extract audio so it can be rendered outside the flip Pressable
+    const { src: audioSrc, html: displayText } = extractAudio(rawDisplay);
 
     return (
       <Animated.View style={[styles.wrap, { zIndex: 10 - index }, cardAnimStyle]}>
@@ -258,6 +308,9 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
                 {flipped ? 'ANSWER' : 'QUESTION'}
               </Text>
             </View>
+
+            {/* Audio outside Pressable so controls don't trigger card flip */}
+            {audioSrc && <AudioPlayer src={audioSrc} />}
 
             {/* Card content — tap to flip */}
             <Pressable
@@ -289,14 +342,15 @@ const richStyles = StyleSheet.create({
     flexGrow: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 20,
-    gap: 14,
+    paddingHorizontal: 28,
+    paddingVertical: 24,
+    gap: 0,
   },
   image: {
-    width: CARD_WIDTH - 48,
-    height: 200,
+    width: CARD_WIDTH - 56,
+    height: 180,
     borderRadius: 12,
+    marginBottom: 16,
   },
   audioChip: {
     flexDirection: 'row',
@@ -304,17 +358,37 @@ const richStyles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 20,
     paddingVertical: 10,
+    marginHorizontal: 24,
+    marginBottom: 8,
     backgroundColor: '#eff6ff',
     borderRadius: 24,
     borderWidth: 1,
     borderColor: '#bfdbfe',
+    alignSelf: 'stretch',
+    justifyContent: 'center',
   },
-  audioIcon: { fontSize: 20 },
+  audioIcon: { fontSize: 18 },
   audioText: { fontSize: 14, color: '#3b82f6', fontWeight: '600' },
-  text: {
-    fontWeight: '500',
+  mainText: {
+    fontWeight: '700',
     color: '#111827',
     textAlign: 'center',
+    marginBottom: 4,
+  },
+  divider: {
+    width: 40,
+    height: 1.5,
+    backgroundColor: '#e5e7eb',
+    borderRadius: 1,
+    marginVertical: 14,
+  },
+  detailText: {
+    fontSize: 16,
+    fontWeight: '400',
+    color: '#4b5563',
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 2,
   },
 });
 
@@ -369,18 +443,6 @@ const styles = StyleSheet.create({
   },
   contentArea: {
     flex: 1,
-  },
-  plainWrap: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 28,
-    paddingVertical: 16,
-  },
-  plainText: {
-    fontWeight: '600',
-    color: '#111827',
-    textAlign: 'center',
   },
   footer: {
     paddingVertical: 13,

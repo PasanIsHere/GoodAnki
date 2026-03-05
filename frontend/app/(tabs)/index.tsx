@@ -1,25 +1,66 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Pressable,
   StyleSheet,
   Text,
-  View,
   TextInput,
+  View,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { DeckWithCounts } from '@/src/types';
 import { getAllDecksWithCounts, createDeck } from '@/src/db/queries/decks';
 
+// ── Deck card — extracted + memoized so FlatList doesn't re-render unchanged items ──
+
+const DeckCard = React.memo(function DeckCard({ item }: { item: DeckWithCounts }) {
+  const router = useRouter();
+  const dueTotal = item.due_count + item.new_count;
+  const isDone = dueTotal === 0;
+
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.deckCard, pressed && styles.deckCardPressed]}
+      onPress={() => router.push(`/deck/${item.id}`)}
+      android_ripple={{ color: '#dbeafe' }}
+    >
+      <View style={[styles.accent, isDone && styles.accentDone]} />
+      <View style={styles.deckBody}>
+        <Text style={styles.deckName} numberOfLines={2}>{item.name}</Text>
+        <Text style={styles.deckMeta}>
+          {item.total_cards.toLocaleString()} card{item.total_cards !== 1 ? 's' : ''}
+          {isDone ? ' · All caught up' : ` · ${dueTotal} to study`}
+        </Text>
+      </View>
+      {isDone ? (
+        <View style={styles.donePill}>
+          <Text style={styles.doneText}>✓</Text>
+        </View>
+      ) : (
+        <View style={styles.duePill}>
+          <Text style={styles.duePillCount}>{dueTotal}</Text>
+          <Text style={styles.duePillLabel}>due</Text>
+        </View>
+      )}
+    </Pressable>
+  );
+});
+
+// ── Screen ───────────────────────────────────────────────────────────────────
+
 export default function DeckListScreen() {
   const [decks, setDecks] = useState<DeckWithCounts[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [newDeckName, setNewDeckName] = useState('');
   const router = useRouter();
+  const inputRef = useRef<TextInput>(null);
 
   const loadDecks = useCallback(async () => {
     const result = await getAllDecksWithCounts();
     setDecks(result);
+    setIsLoading(false);
   }, []);
 
   useFocusEffect(
@@ -37,66 +78,53 @@ export default function DeckListScreen() {
     loadDecks();
   };
 
-  const renderDeck = ({ item }: { item: DeckWithCounts }) => {
-    const dueTotal = item.due_count + item.new_count;
-
-    return (
-      <Pressable
-        style={styles.deckCard}
-        onPress={() => router.push(`/deck/${item.id}`)}
-      >
-        <View style={styles.deckInfo}>
-          <Text style={styles.deckName}>{item.name}</Text>
-          <Text style={styles.deckMeta}>
-            {item.total_cards} card{item.total_cards !== 1 ? 's' : ''}
-          </Text>
-        </View>
-        <View style={styles.badgeContainer}>
-          {item.new_count > 0 && (
-            <View style={[styles.badge, styles.newBadge]}>
-              <Text style={styles.newBadgeText}>{item.new_count} new</Text>
-            </View>
-          )}
-          {item.due_count > 0 && (
-            <View style={[styles.badge, styles.dueBadge]}>
-              <Text style={styles.dueBadgeText}>{item.due_count} due</Text>
-            </View>
-          )}
-          {dueTotal === 0 && (
-            <View style={styles.donePill}>
-              <Text style={styles.doneText}>Done ✓</Text>
-            </View>
-          )}
-        </View>
-      </Pressable>
-    );
+  const handleShowCreate = () => {
+    setShowCreate(true);
+    // Focus is handled by autoFocus on TextInput
   };
+
+  const renderDeck = useCallback(
+    ({ item }: { item: DeckWithCounts }) => <DeckCard item={item} />,
+    []
+  );
+
+  const keyExtractor = useCallback((item: DeckWithCounts) => item.id, []);
 
   return (
     <View style={styles.container}>
-      <FlatList
-        data={decks}
-        keyExtractor={(item) => item.id}
-        renderItem={renderDeck}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyIcon}>📚</Text>
-            <Text style={styles.emptyTitle}>No decks yet</Text>
-            <Text style={styles.emptySubtitle}>
-              Create a deck below, or tap{' '}
-              <Text style={styles.emptyLink} onPress={() => router.push('/import')}>
-                Import
+      {isLoading ? (
+        <ActivityIndicator style={styles.loader} size="large" color="#3b82f6" />
+      ) : (
+        <FlatList
+          data={decks}
+          keyExtractor={keyExtractor}
+          renderItem={renderDeck}
+          contentContainerStyle={styles.list}
+          removeClippedSubviews
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          initialNumToRender={10}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Text style={styles.emptyIcon}>📚</Text>
+              <Text style={styles.emptyTitle}>No decks yet</Text>
+              <Text style={styles.emptySubtitle}>
+                Tap{' '}
+                <Text style={styles.emptyLink} onPress={() => router.push('/import')}>
+                  Import
+                </Text>
+                {' '}in the top-right to load an Anki deck, or create one below.
               </Text>
-              {' '}in the top-right to load an .apkg file.
-            </Text>
-          </View>
-        }
-      />
+            </View>
+          }
+        />
+      )}
 
       {showCreate ? (
-        <View style={styles.createForm}>
+        <View style={styles.createSheet}>
+          <Text style={styles.createTitle}>New Deck</Text>
           <TextInput
+            ref={inputRef}
             style={styles.input}
             placeholder="Deck name…"
             placeholderTextColor="#9ca3af"
@@ -107,7 +135,10 @@ export default function DeckListScreen() {
             returnKeyType="done"
           />
           <View style={styles.createButtons}>
-            <Pressable style={styles.cancelBtn} onPress={() => { setShowCreate(false); setNewDeckName(''); }}>
+            <Pressable
+              style={styles.cancelBtn}
+              onPress={() => { setShowCreate(false); setNewDeckName(''); }}
+            >
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
             <Pressable
@@ -120,7 +151,7 @@ export default function DeckListScreen() {
           </View>
         </View>
       ) : (
-        <Pressable style={styles.fab} onPress={() => setShowCreate(true)}>
+        <Pressable style={styles.fab} onPress={handleShowCreate}>
           <Text style={styles.fabText}>+</Text>
         </Pressable>
       )}
@@ -128,49 +159,86 @@ export default function DeckListScreen() {
   );
 }
 
+// ── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f0f4ff' },
-  list: { padding: 16, paddingBottom: 100 },
+  loader: { flex: 1 },
+  list: { padding: 16, paddingBottom: 110, gap: 10 },
 
+  // Deck card
   deckCard: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    overflow: 'hidden',
     shadowColor: '#3b82f6',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 8,
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
     elevation: 3,
-    borderWidth: 1,
-    borderColor: '#e8f0fe',
   },
-  deckInfo: { flex: 1, marginRight: 12 },
-  deckName: { fontSize: 17, fontWeight: '700', color: '#1e3a5f', marginBottom: 4 },
-  deckMeta: { fontSize: 13, color: '#6b7280' },
-
-  badgeContainer: { flexDirection: 'row', gap: 6, alignItems: 'center' },
-  badge: {
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+  deckCardPressed: {
+    opacity: 0.93,
   },
-  newBadge: { backgroundColor: '#eff6ff' },
-  newBadgeText: { color: '#3b82f6', fontSize: 12, fontWeight: '700' },
-  dueBadge: { backgroundColor: '#f0fdf4' },
-  dueBadgeText: { color: '#16a34a', fontSize: 12, fontWeight: '700' },
-  donePill: { paddingHorizontal: 10, paddingVertical: 4 },
-  doneText: { fontSize: 13, color: '#9ca3af', fontWeight: '500' },
+  accent: {
+    width: 4,
+    alignSelf: 'stretch',
+    backgroundColor: '#3b82f6',
+  },
+  accentDone: {
+    backgroundColor: '#22c55e',
+  },
+  deckBody: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingLeft: 12,
+    paddingRight: 8,
+  },
+  deckName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 3,
+  },
+  deckMeta: {
+    fontSize: 13,
+    color: '#6b7280',
+  },
+  duePill: {
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  duePillCount: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#3b82f6',
+    lineHeight: 24,
+  },
+  duePillLabel: {
+    fontSize: 11,
+    color: '#93c5fd',
+    fontWeight: '600',
+  },
+  donePill: {
+    paddingHorizontal: 16,
+  },
+  doneText: {
+    fontSize: 18,
+    color: '#22c55e',
+    fontWeight: '700',
+  },
 
+  // Empty state
   empty: { alignItems: 'center', paddingTop: 80, paddingHorizontal: 32 },
   emptyIcon: { fontSize: 56, marginBottom: 16 },
   emptyTitle: { fontSize: 22, fontWeight: '700', color: '#374151', marginBottom: 10 },
   emptySubtitle: { fontSize: 15, color: '#6b7280', textAlign: 'center', lineHeight: 22 },
   emptyLink: { color: '#3b82f6', fontWeight: '600' },
 
+  // FAB
   fab: {
     position: 'absolute',
     bottom: 28,
@@ -189,29 +257,36 @@ const styles = StyleSheet.create({
   },
   fabText: { fontSize: 30, color: '#fff', fontWeight: '300', marginTop: -2 },
 
-  createForm: {
+  // Create sheet
+  createSheet: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
     backgroundColor: '#fff',
-    padding: 16,
+    padding: 20,
     paddingBottom: 36,
-    borderTopWidth: 1,
-    borderTopColor: '#e5e7eb',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 8,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 10,
+    gap: 12,
+  },
+  createTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 2,
   },
   input: {
     borderWidth: 1.5,
     borderColor: '#3b82f6',
-    borderRadius: 10,
+    borderRadius: 12,
     padding: 13,
     fontSize: 16,
-    marginBottom: 12,
     color: '#1f2937',
     backgroundColor: '#fafafa',
   },
@@ -220,7 +295,7 @@ const styles = StyleSheet.create({
   cancelText: { color: '#6b7280', fontSize: 15, fontWeight: '500' },
   createBtn: {
     backgroundColor: '#3b82f6',
-    paddingHorizontal: 22,
+    paddingHorizontal: 24,
     paddingVertical: 11,
     borderRadius: 10,
   },
