@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -12,36 +12,160 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { DeckWithCounts } from '@/src/types';
 import { getAllDecksWithCounts, createDeck } from '@/src/db/queries/decks';
 
-// ── Deck card — extracted + memoized so FlatList doesn't re-render unchanged items ──
+// ── Tree data model ───────────────────────────────────────────────────────────
 
-const DeckCard = React.memo(function DeckCard({ item }: { item: DeckWithCounts }) {
+interface DeckNode {
+  label: string;
+  fullName: string;
+  deck?: DeckWithCounts;
+  children: DeckNode[];
+  total_cards: number;
+  due_count: number;
+  new_count: number;
+}
+
+function buildTree(decks: DeckWithCounts[]): DeckNode[] {
+  const sorted = [...decks].sort((a, b) => a.name.localeCompare(b.name));
+  const root: DeckNode[] = [];
+
+  for (const deck of sorted) {
+    const parts = deck.name.split('::');
+    let level = root;
+    let fullPath = '';
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      fullPath = fullPath ? `${fullPath}::${part}` : part;
+      const isLeaf = i === parts.length - 1;
+
+      let node = level.find(n => n.label === part);
+      if (!node) {
+        node = { label: part, fullName: fullPath, children: [], total_cards: 0, due_count: 0, new_count: 0 };
+        level.push(node);
+      }
+      if (isLeaf) node.deck = deck;
+      level = node.children;
+    }
+  }
+
+  function aggregate(node: DeckNode) {
+    for (const c of node.children) aggregate(c);
+    node.total_cards = node.deck?.total_cards ?? 0;
+    node.due_count = node.deck?.due_count ?? 0;
+    node.new_count = node.deck?.new_count ?? 0;
+    for (const c of node.children) {
+      node.total_cards += c.total_cards;
+      node.due_count += c.due_count;
+      node.new_count += c.new_count;
+    }
+  }
+
+  for (const node of root) aggregate(node);
+  return root;
+}
+
+interface FlatItem {
+  key: string;
+  node: DeckNode;
+  depth: number;
+  hasChildren: boolean;
+}
+
+function flattenTree(nodes: DeckNode[], depth: number, expanded: Set<string>): FlatItem[] {
+  const result: FlatItem[] = [];
+  for (const node of nodes) {
+    const hasChildren = node.children.length > 0;
+    result.push({ key: node.fullName, node, depth, hasChildren });
+    if (hasChildren && expanded.has(node.fullName)) {
+      result.push(...flattenTree(node.children, depth + 1, expanded));
+    }
+  }
+  return result;
+}
+
+// ── Tree row ──────────────────────────────────────────────────────────────────
+
+const INDENT = 20;
+
+const DeckRow = React.memo(function DeckRow({
+  item,
+  isExpanded,
+  onToggle,
+}: {
+  item: FlatItem;
+  isExpanded: boolean;
+  onToggle: (key: string) => void;
+}) {
   const router = useRouter();
-  const dueTotal = item.due_count + item.new_count;
+  const { node, depth, hasChildren } = item;
+  const dueTotal = node.due_count + node.new_count;
   const isDone = dueTotal === 0;
+
+  const handlePress = () => {
+    if (hasChildren) {
+      onToggle(node.fullName);
+    } else if (node.deck) {
+      router.push(`/deck/${node.deck.id}`);
+    }
+  };
+
+  const handleNavigate = () => {
+    if (node.deck) router.push(`/deck/${node.deck.id}`);
+  };
 
   return (
     <Pressable
-      style={({ pressed }) => [styles.deckCard, pressed && styles.deckCardPressed]}
-      onPress={() => router.push(`/deck/${item.id}`)}
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+      onPress={handlePress}
       android_ripple={{ color: '#dbeafe' }}
     >
-      <View style={[styles.accent, isDone && styles.accentDone]} />
-      <View style={styles.deckBody}>
-        <Text style={styles.deckName} numberOfLines={2}>{item.name}</Text>
-        <Text style={styles.deckMeta}>
-          {item.total_cards.toLocaleString()} card{item.total_cards !== 1 ? 's' : ''}
+      {/* Indent + chevron/leaf indicator */}
+      <View style={[styles.indentBlock, { width: 16 + depth * INDENT }]}>
+        {depth > 0 && <View style={styles.indentLine} />}
+      </View>
+
+      {hasChildren ? (
+        <Text style={styles.chevron}>{isExpanded ? '▾' : '▸'}</Text>
+      ) : (
+        <View style={styles.leafDot} />
+      )}
+
+      {/* Name + meta */}
+      <View style={styles.rowBody}>
+        <Text style={[styles.rowName, depth === 0 && styles.rowNameRoot]} numberOfLines={2}>
+          {node.label}
+        </Text>
+        <Text style={styles.rowMeta}>
+          {node.total_cards.toLocaleString()} card{node.total_cards !== 1 ? 's' : ''}
           {isDone ? ' · All caught up' : ` · ${dueTotal} to study`}
         </Text>
       </View>
-      {isDone ? (
-        <View style={styles.donePill}>
-          <Text style={styles.doneText}>✓</Text>
-        </View>
+
+      {/* Right side: navigate button (if has deck) or due pill */}
+      {hasChildren && node.deck ? (
+        <Pressable onPress={handleNavigate} style={styles.navBtn} hitSlop={8}>
+          <Text style={[styles.navBtnText, isDone && styles.navBtnTextDone]}>
+            {isDone ? '✓' : dueTotal}
+          </Text>
+          <Text style={styles.navArrow}>›</Text>
+        </Pressable>
+      ) : !hasChildren ? (
+        isDone ? (
+          <View style={styles.donePill}>
+            <Text style={styles.doneText}>✓</Text>
+          </View>
+        ) : (
+          <View style={styles.duePill}>
+            <Text style={styles.duePillCount}>{dueTotal}</Text>
+            <Text style={styles.duePillLabel}>due</Text>
+          </View>
+        )
       ) : (
-        <View style={styles.duePill}>
-          <Text style={styles.duePillCount}>{dueTotal}</Text>
-          <Text style={styles.duePillLabel}>due</Text>
-        </View>
+        isDone ? null : (
+          <View style={styles.duePillSmall}>
+            <Text style={styles.duePillSmallText}>{dueTotal}</Text>
+          </View>
+        )
       )}
     </Pressable>
   );
@@ -54,6 +178,7 @@ export default function DeckListScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [newDeckName, setNewDeckName] = useState('');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const router = useRouter();
   const inputRef = useRef<TextInput>(null);
 
@@ -69,6 +194,18 @@ export default function DeckListScreen() {
     }, [loadDecks])
   );
 
+  const tree = useMemo(() => buildTree(decks), [decks]);
+  const flatItems = useMemo(() => flattenTree(tree, 0, expanded), [tree, expanded]);
+
+  const handleToggle = useCallback((key: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   const handleCreateDeck = async () => {
     const name = newDeckName.trim();
     if (!name) return;
@@ -78,17 +215,14 @@ export default function DeckListScreen() {
     loadDecks();
   };
 
-  const handleShowCreate = () => {
-    setShowCreate(true);
-    // Focus is handled by autoFocus on TextInput
-  };
-
-  const renderDeck = useCallback(
-    ({ item }: { item: DeckWithCounts }) => <DeckCard item={item} />,
-    []
+  const renderItem = useCallback(
+    ({ item }: { item: FlatItem }) => (
+      <DeckRow item={item} isExpanded={expanded.has(item.key)} onToggle={handleToggle} />
+    ),
+    [expanded, handleToggle]
   );
 
-  const keyExtractor = useCallback((item: DeckWithCounts) => item.id, []);
+  const keyExtractor = useCallback((item: FlatItem) => item.key, []);
 
   return (
     <View style={styles.container}>
@@ -96,14 +230,14 @@ export default function DeckListScreen() {
         <ActivityIndicator style={styles.loader} size="large" color="#3b82f6" />
       ) : (
         <FlatList
-          data={decks}
+          data={flatItems}
           keyExtractor={keyExtractor}
-          renderItem={renderDeck}
+          renderItem={renderItem}
           contentContainerStyle={styles.list}
           removeClippedSubviews
-          maxToRenderPerBatch={10}
-          windowSize={5}
-          initialNumToRender={10}
+          maxToRenderPerBatch={20}
+          windowSize={7}
+          initialNumToRender={20}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Text style={styles.emptyIcon}>📚</Text>
@@ -151,7 +285,7 @@ export default function DeckListScreen() {
           </View>
         </View>
       ) : (
-        <Pressable style={styles.fab} onPress={handleShowCreate}>
+        <Pressable style={styles.fab} onPress={() => setShowCreate(true)}>
           <Text style={styles.fabText}>+</Text>
         </Pressable>
       )}
@@ -164,48 +298,95 @@ export default function DeckListScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f0f4ff' },
   loader: { flex: 1 },
-  list: { padding: 16, paddingBottom: 110, gap: 10 },
+  list: { paddingTop: 8, paddingBottom: 110 },
 
-  // Deck card
-  deckCard: {
+  // Tree row
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    borderRadius: 16,
-    overflow: 'hidden',
+    marginHorizontal: 12,
+    marginVertical: 3,
+    borderRadius: 14,
+    minHeight: 58,
     shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  deckCardPressed: {
-    opacity: 0.93,
-  },
-  accent: {
-    width: 4,
+  rowPressed: { opacity: 0.88 },
+
+  indentBlock: {
     alignSelf: 'stretch',
-    backgroundColor: '#3b82f6',
+    justifyContent: 'center',
+    paddingLeft: 10,
   },
-  accentDone: {
-    backgroundColor: '#22c55e',
+  indentLine: {
+    position: 'absolute',
+    left: 14,
+    top: 0,
+    bottom: 0,
+    width: 1.5,
+    backgroundColor: '#e5e7eb',
   },
-  deckBody: {
+
+  chevron: {
+    fontSize: 16,
+    color: '#3b82f6',
+    width: 20,
+    textAlign: 'center',
+    marginRight: 4,
+  },
+  leafDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#d1d5db',
+    marginRight: 6,
+    marginLeft: 7,
+  },
+
+  rowBody: {
     flex: 1,
-    paddingVertical: 14,
-    paddingLeft: 12,
+    paddingVertical: 12,
     paddingRight: 8,
   },
-  deckName: {
+  rowName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 2,
+  },
+  rowNameRoot: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#111827',
-    marginBottom: 3,
   },
-  deckMeta: {
-    fontSize: 13,
-    color: '#6b7280',
+  rowMeta: {
+    fontSize: 12,
+    color: '#9ca3af',
   },
+
+  // Nav button (parent node that is also a navigable deck)
+  navBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 2,
+  },
+  navBtnText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#3b82f6',
+  },
+  navBtnTextDone: { color: '#22c55e' },
+  navArrow: {
+    fontSize: 20,
+    color: '#93c5fd',
+    marginTop: -1,
+  },
+
   duePill: {
     alignItems: 'center',
     paddingHorizontal: 14,
@@ -221,6 +402,18 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#93c5fd',
     fontWeight: '600',
+  },
+  duePillSmall: {
+    backgroundColor: '#eff6ff',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginRight: 12,
+  },
+  duePillSmallText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#3b82f6',
   },
   donePill: {
     paddingHorizontal: 16,

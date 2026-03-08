@@ -11,7 +11,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import CardStack, { CardStackHandle } from '@/src/components/review/CardStack';
 import UndoButton from '@/src/components/review/UndoButton';
 import { useReviewSession } from '@/src/hooks/useReviewSession';
-
 export default function ReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -22,7 +21,10 @@ export default function ReviewScreen() {
     isLoading,
     sessionComplete,
     reviewedCount,
-    totalCount,
+    remainingNew,
+    remainingLearn,
+    remainingReview,
+    progress,
     canUndo,
     handleSwipe,
     handleUndo,
@@ -37,8 +39,6 @@ export default function ReviewScreen() {
     );
   }
 
-  const progress = totalCount > 0 ? reviewedCount / totalCount : 0;
-
   return (
     <SafeAreaView style={styles.container}>
       {/* Top bar */}
@@ -47,11 +47,15 @@ export default function ReviewScreen() {
           <Text style={styles.closeBtnText}>✕</Text>
         </Pressable>
 
-        <View style={styles.progressPill}>
-          <View style={[styles.progressFill, { width: `${progress * 100}%` as any }]} />
-          <Text style={styles.progressLabel}>
-            {reviewedCount} / {totalCount}
-          </Text>
+        <View style={styles.progressArea}>
+          <View style={styles.countRow}>
+            <Text style={[styles.countChip, styles.countNew]}>{remainingNew}</Text>
+            <Text style={[styles.countChip, styles.countLearn]}>{remainingLearn}</Text>
+            <Text style={[styles.countChip, styles.countReview]}>{remainingReview}</Text>
+          </View>
+          <View style={styles.progressBar}>
+            <View style={[styles.progressFill, { width: `${progress * 100}%` as any }]} />
+          </View>
         </View>
 
         <UndoButton onPress={handleUndo} disabled={!canUndo} />
@@ -67,7 +71,7 @@ export default function ReviewScreen() {
             </Text>
             <View style={styles.statRow}>
               <View style={styles.statItem}>
-                <Text style={styles.statValue}>{reviewedCount}</Text>
+                <Text style={[styles.statValue, { color: '#3b82f6' }]}>{reviewedCount}</Text>
                 <Text style={styles.statLabel}>Reviewed</Text>
               </View>
             </View>
@@ -145,16 +149,29 @@ const styles = StyleSheet.create({
   },
   closeBtnText: { fontSize: 13, color: '#6b7280', fontWeight: '700' },
 
-  // Progress pill replaces the separate bar
-  progressPill: {
+  progressArea: {
     flex: 1,
-    height: 28,
-    backgroundColor: '#e5e7eb',
-    borderRadius: 14,
-    overflow: 'hidden',
+    gap: 5,
+  },
+  countRow: {
+    flexDirection: 'row',
     justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
+    gap: 10,
+  },
+  countChip: {
+    fontSize: 13,
+    fontWeight: '700',
+    minWidth: 22,
+    textAlign: 'center',
+  },
+  countNew: { color: '#3b82f6' },
+  countLearn: { color: '#f97316' },
+  countReview: { color: '#22c55e' },
+  progressBar: {
+    height: 5,
+    backgroundColor: '#e5e7eb',
+    borderRadius: 3,
+    overflow: 'hidden',
   },
   progressFill: {
     position: 'absolute',
@@ -162,14 +179,7 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     backgroundColor: '#3b82f6',
-    borderRadius: 14,
-    opacity: 0.25,
-  },
-  progressLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#374151',
-    letterSpacing: 0.3,
+    borderRadius: 3,
   },
 
   // Card stack area

@@ -26,18 +26,27 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
 
 async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
   await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS note_types (
+      id   TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      css  TEXT DEFAULT ''
+    );
+
     CREATE TABLE IF NOT EXISTS decks (
-      id                TEXT PRIMARY KEY,
-      name              TEXT NOT NULL,
-      description       TEXT DEFAULT '',
-      new_cards_per_day INTEGER DEFAULT 20,
-      created_at        TEXT NOT NULL,
-      updated_at        TEXT NOT NULL
+      id                  TEXT PRIMARY KEY,
+      name                TEXT NOT NULL,
+      description         TEXT DEFAULT '',
+      css                 TEXT DEFAULT '',
+      new_cards_per_day   INTEGER DEFAULT 10,
+      max_reviews_per_day INTEGER DEFAULT 9999,
+      created_at          TEXT NOT NULL,
+      updated_at          TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS cards (
       id              TEXT PRIMARY KEY,
       deck_id         TEXT NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+      notetype_id     TEXT REFERENCES note_types(id) ON DELETE SET NULL,
       front           TEXT NOT NULL,
       back            TEXT NOT NULL,
       tags            TEXT DEFAULT '',
@@ -82,6 +91,34 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_review_log_card_id ON review_log(card_id);
     CREATE INDEX IF NOT EXISTS idx_cards_deck_state_due ON cards(deck_id, state, due);
   `);
+
+  // Migration: add max_reviews_per_day for existing databases
+  try {
+    await db.execAsync('ALTER TABLE decks ADD COLUMN max_reviews_per_day INTEGER DEFAULT 9999');
+  } catch {
+    // Column already exists — no-op
+  }
+
+  // Migration: add css column for deck-level card styling
+  try {
+    await db.execAsync("ALTER TABLE decks ADD COLUMN css TEXT DEFAULT ''");
+  } catch {
+    // Column already exists — no-op
+  }
+
+  // Migration: note_types table and notetype_id on cards
+  try {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS note_types (
+        id   TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        css  TEXT DEFAULT ''
+      )
+    `);
+  } catch { /* already exists */ }
+  try {
+    await db.execAsync('ALTER TABLE cards ADD COLUMN notetype_id TEXT');
+  } catch { /* already exists */ }
 }
 
 export async function resetDatabase(): Promise<void> {

@@ -16,6 +16,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+import zstandard
+
 
 def parse_apkg(file_path: str | Path) -> dict[str, Any]:
     """Parse an .apkg file and return structured deck data."""
@@ -28,7 +30,7 @@ def parse_apkg(file_path: str | Path) -> dict[str, Any]:
             zf.extractall(tmpdir)
             media_dict = _load_media(zf)
 
-        # Find the SQLite database (prefer newer formats)
+        # Find the SQLite database (prefer newer formats which have more complete data)
         db_path = None
         for name in ("collection.anki21b", "collection.anki21", "collection.anki2"):
             candidate = tmpdir / name
@@ -36,7 +38,19 @@ def parse_apkg(file_path: str | Path) -> dict[str, Any]:
                 db_path = candidate
                 break
         if db_path is None:
-            raise ValueError("No collection database found in .apkg file")
+            found = [f.name for f in tmpdir.iterdir()]
+            raise ValueError(
+                f"No collection database found in .apkg file. "
+                f"Archive contains: {found}"
+            )
+
+        # .anki21b files are zstd-compressed SQLite — decompress before opening
+        if db_path.suffix == ".anki21b":
+            decompressed = db_path.with_suffix(".anki21b.sqlite")
+            dctx = zstandard.ZstdDecompressor()
+            with db_path.open("rb") as src, decompressed.open("wb") as dst:
+                dctx.copy_stream(src, dst)
+            db_path = decompressed
 
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -46,30 +60,130 @@ def parse_apkg(file_path: str | Path) -> dict[str, Any]:
             conn.close()
 
 
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _maybe_decompress(data: bytes) -> bytes:
+    """Decompress zstd data if it starts with the zstd magic bytes."""
+    if data[:4] == _ZSTD_MAGIC:
+        dctx = zstandard.ZstdDecompressor()
+        return dctx.stream_reader(data).read()
+    return data
+
+
 def _load_media(zf: zipfile.ZipFile) -> dict[str, bytes]:
     """Return {original_filename: file_bytes} for every media file in the archive."""
     names = zf.namelist()
     if "media" not in names:
         return {}
 
-    media_index: dict[str, str] = json.loads(zf.read("media"))
+    try:
+        media_index: dict[str, str] = json.loads(_maybe_decompress(zf.read("media")))
+    except (ValueError, UnicodeDecodeError):
+        # Newer Anki versions use a protobuf media manifest — skip media embedding
+        return {}
+
     # media_index maps numeric zip entry names → original filenames
     result: dict[str, bytes] = {}
     for num_name, orig_name in media_index.items():
         if num_name in names:
-            result[orig_name] = zf.read(num_name)
+            result[orig_name] = _maybe_decompress(zf.read(num_name))
     return result
 
 
-def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dict[str, Any]:
-    """Extract decks, models, and notes from the Anki SQLite database."""
-    cursor = conn.cursor()
+def _proto_fields(data: bytes) -> dict[int, list]:
+    """Minimal protobuf decoder. Returns {field_number: [values...]}."""
+    result: dict[int, list] = {}
+    pos = 0
+    while pos < len(data):
+        try:
+            tag = 0
+            shift = 0
+            while True:
+                b = data[pos]; pos += 1
+                tag |= (b & 0x7f) << shift
+                if not (b & 0x80): break
+                shift += 7
+            wire_type = tag & 0x7
+            field_num = tag >> 3
+            if wire_type == 0:  # varint
+                val = 0; shift = 0
+                while True:
+                    b = data[pos]; pos += 1
+                    val |= (b & 0x7f) << shift
+                    if not (b & 0x80): break
+                    shift += 7
+                result.setdefault(field_num, []).append(val)
+            elif wire_type == 2:  # length-delimited
+                length = 0; shift = 0
+                while True:
+                    b = data[pos]; pos += 1
+                    length |= (b & 0x7f) << shift
+                    if not (b & 0x80): break
+                    shift += 7
+                val = data[pos:pos + length]; pos += length
+                result.setdefault(field_num, []).append(val)
+            elif wire_type == 5:  # 32-bit
+                pos += 4
+            elif wire_type == 1:  # 64-bit
+                pos += 8
+            else:
+                break  # unknown wire type, stop
+        except IndexError:
+            break
+    return result
 
+
+def _build_model_map_new(cursor: sqlite3.Cursor) -> dict[str, dict]:
+    """Build model_map from new-schema notetypes/fields/templates tables."""
+    # notetypes: id, name, config(protobuf: field1=type, field3=css)
+    notetypes = cursor.execute("SELECT id, name, config FROM notetypes").fetchall()
+    fields_rows = cursor.execute("SELECT ntid, ord, name FROM fields ORDER BY ntid, ord").fetchall()
+    templates_rows = cursor.execute("SELECT ntid, ord, name, config FROM templates ORDER BY ntid, ord").fetchall()
+
+    # Group fields and templates by notetype id
+    fields_by_ntid: dict[int, list] = {}
+    for row in fields_rows:
+        fields_by_ntid.setdefault(row["ntid"], []).append(row["name"])
+
+    templates_by_ntid: dict[int, list] = {}
+    for row in templates_rows:
+        cfg = _proto_fields(row["config"])
+        qfmt = cfg.get(1, [b""])[0].decode("utf-8", errors="replace")
+        afmt = cfg.get(2, [b""])[0].decode("utf-8", errors="replace")
+        templates_by_ntid.setdefault(row["ntid"], []).append({
+            "name": row["name"], "qfmt": qfmt, "afmt": afmt
+        })
+
+    model_map: dict[str, dict] = {}
+    for nt in notetypes:
+        ntid = nt["id"]
+        cfg = _proto_fields(bytes(nt["config"]))
+        nt_type = cfg.get(1, [0])[0]  # field 1: type (0=standard, 1=cloze)
+        css_bytes = cfg.get(3, [b""])[0]
+        css = css_bytes.decode("utf-8", errors="replace") if isinstance(css_bytes, (bytes, bytearray)) else ""
+        model_map[str(ntid)] = {
+            "name": nt["name"],
+            "type": nt_type,
+            "css": css,
+            "fields": fields_by_ntid.get(ntid, []),
+            "templates": templates_by_ntid.get(ntid, []),
+        }
+    return model_map
+
+
+def _build_deck_map_new(cursor: sqlite3.Cursor) -> dict[str, str]:
+    """Build deck_map from new-schema decks table. Subdeck separator is \\x1f."""
+    rows = cursor.execute("SELECT id, name FROM decks").fetchall()
+    return {str(row["id"]): row["name"].replace("\x1f", "::") for row in rows}
+
+
+def _build_model_deck_map_legacy(cursor: sqlite3.Cursor) -> tuple[dict[str, dict], dict[str, str]]:
+    """Build model_map and deck_map from the legacy col JSON columns."""
     col_row = cursor.execute("SELECT models, decks FROM col").fetchone()
     models = json.loads(col_row["models"])
     decks_config = json.loads(col_row["decks"])
 
-    # Build model map: model_id -> { name, type, css, fields, templates }
     model_map: dict[str, dict] = {}
     for mid, model in models.items():
         field_names = [f["name"] for f in model["flds"]]
@@ -79,19 +193,33 @@ def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dic
         ]
         model_map[mid] = {
             "name": model["name"],
-            "type": model.get("type", 0),  # 0=Standard, 1=Cloze
+            "type": model.get("type", 0),
             "css": model.get("css", ""),
             "fields": field_names,
             "templates": templates,
         }
-
     deck_map: dict[str, str] = {did: d["name"] for did, d in decks_config.items()}
+    return model_map, deck_map
+
+
+def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dict[str, Any]:
+    """Extract decks, models, and notes from the Anki SQLite database."""
+    cursor = conn.cursor()
+
+    # Detect schema: new (Anki 2.1.28+) uses separate notetypes/fields/templates/decks tables
+    tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "notetypes" in tables:
+        model_map = _build_model_map_new(cursor)
+        deck_map = _build_deck_map_new(cursor)
+    else:
+        model_map, deck_map = _build_model_deck_map_legacy(cursor)
 
     notes = cursor.execute("SELECT id, mid, flds, tags FROM notes").fetchall()
     cards = cursor.execute("SELECT id, nid, did FROM cards").fetchall()
     note_to_deck: dict[int, str] = {card["nid"]: str(card["did"]) for card in cards}
 
     decks_data: dict[str, dict] = {}
+    notetypes_seen: dict[str, dict] = {}
 
     for note in notes:
         nid = note["id"]
@@ -101,6 +229,14 @@ def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dic
         model = model_map.get(mid)
         if not model:
             continue
+
+        # Collect notetype (CSS stored once per notetype, not per card)
+        if mid not in notetypes_seen:
+            notetypes_seen[mid] = {
+                "id": mid,
+                "name": model["name"],
+                "css": model.get("css", ""),
+            }
 
         field_values = note["flds"].split("\x1f")
         fields_dict = {
@@ -125,10 +261,16 @@ def _extract_data(conn: sqlite3.Connection, media_dict: dict[str, bytes]) -> dic
         for front, back in note_cards:
             if not front and not back:
                 continue
-            decks_data[did]["cards"].append({"front": front, "back": back, "tags": tags})
+            decks_data[did]["cards"].append({
+                "front": front,
+                "back": back,
+                "tags": tags,
+                "notetype_id": mid,
+            })
 
     result_decks = list(decks_data.values())
     return {
+        "notetypes": list(notetypes_seen.values()),
         "decks": result_decks,
         "total_cards": sum(len(d["cards"]) for d in result_decks),
     }
@@ -219,12 +361,6 @@ def _extract_standard_cards(
         back_raw = back_raw.replace("{{FrontSide}}", front_raw)
         back_processed = _process_field(back_raw, media_dict)
 
-        # Inject model CSS when there is HTML content
-        if re.search(r"<[a-z]", front_processed, re.IGNORECASE):
-            front_processed = _inject_css(front_processed, css)
-        if re.search(r"<[a-z]", back_processed, re.IGNORECASE):
-            back_processed = _inject_css(back_processed, css)
-
         results.append((front_processed, back_processed))
 
     if results:
@@ -280,7 +416,9 @@ def _extract_cloze_cards(
             answer = m.group(2)
             hint = m.group(3) or "..."
             if n == ordinal:
-                return f"[{hint}]" if not reveal else f"<b><u>{answer}</u></b>"
+                if not reveal:
+                    return f'<span class="cloze cloze-blank">[{hint}]</span>'
+                return f'<span class="cloze cloze-answer">{answer}</span>'
             return answer  # other cloze deletions show their answer
 
         # Match {{cN::answer}} and {{cN::answer::hint}}
@@ -290,13 +428,9 @@ def _extract_cloze_cards(
         front_text = render_cloze(cloze_text, n, reveal=False)
         back_text = render_cloze(cloze_text, n, reveal=True)
 
-        front_processed = _process_field(front_text, media_dict)
-        back_processed = _process_field(back_text, media_dict)
-
-        if re.search(r"<[a-z]", front_processed, re.IGNORECASE):
-            front_processed = _inject_css(front_processed, css)
-        if re.search(r"<[a-z]", back_processed, re.IGNORECASE):
-            back_processed = _inject_css(back_processed, css)
+        # Always use _process_cloze_field so cloze spans survive HTML cleaning
+        front_processed = _process_cloze_field(front_text, media_dict)
+        back_processed = _process_cloze_field(back_text, media_dict)
 
         results.append((front_processed, back_processed))
 
@@ -306,25 +440,22 @@ def _extract_cloze_cards(
 # ── Field processing ──────────────────────────────────────────────────────────
 
 def _process_field(text: str, media_dict: dict[str, bytes]) -> str:
-    """Process a single field value.
+    """Process a field value for rendering.
 
-    - With media: replaces [sound:…] with <audio> and <img src="fname"> with
-      inline data URIs, then lightly cleans surrounding HTML.
-    - Without media: fully strips HTML to plain text.
+    Substitutes media (images → base64 data URIs, [sound:] → <audio>),
+    removes scripts (security) and embedded style blocks (model CSS is
+    injected separately by _inject_css), and preserves all other HTML
+    structure so that the card's CSS selectors continue to work.
     """
-    if not media_dict:
-        return _clean_html(text)
-
-    # Replace [sound:fname] → <audio> with data URI (or text placeholder)
     text = _replace_sound_refs(text, media_dict)
-
-    # Replace <img src="fname"> → <img src="data:…;base64,…">
     text = _replace_img_srcs(text, media_dict)
+    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    return text.strip()
 
-    # If we embedded any media, keep light HTML; otherwise strip fully
-    if re.search(r"<img\s|<audio\s", text, re.IGNORECASE):
-        return _light_clean_html(text)
-    return _clean_html(text)
+
+# _process_cloze_field is now identical to _process_field; kept as alias for clarity
+_process_cloze_field = _process_field
 
 
 def _replace_sound_refs(text: str, media_dict: dict[str, bytes]) -> str:
@@ -397,8 +528,8 @@ def _light_clean_html(text: str) -> str:
     # Convert block elements to line breaks
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</?(?:div|p|hr|li|ul|ol)[^>]*>", "\n", text, flags=re.IGNORECASE)
-    # Strip all tags EXCEPT img, audio, and basic inline formatting
-    text = re.sub(r"<(?!/?(?:img|audio|b|u|i|strong|em)\b)[^>]+>", "", text, flags=re.IGNORECASE)
+    # Strip all tags EXCEPT img, audio, basic inline formatting, and cloze spans
+    text = re.sub(r"<(?!/?(?:img|audio|b|u|i|strong|em|span)\b)[^>]+>", "", text, flags=re.IGNORECASE)
     # Unescape HTML entities
     text = html_lib.unescape(text)
     # Normalize whitespace (but keep newlines around media)

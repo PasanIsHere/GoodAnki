@@ -1,9 +1,10 @@
 import React from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/components/useColorScheme';
 import { resetDatabase } from '@/src/db/database';
 import { seedDatabase } from '@/src/db/seed';
+import { deleteAllDecks } from '@/src/db/queries/decks';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -13,23 +14,47 @@ export default function SettingsScreen() {
     router.push('/import');
   };
 
+  const handleDeleteAllDecks = () => {
+    const run = () => {
+      deleteAllDecks()
+        .then(() => Alert.alert('Done', 'All decks and cards have been deleted.'))
+        .catch(e => Alert.alert('Error', String(e)));
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Delete all decks and cards? This cannot be undone.')) run();
+    } else {
+      Alert.alert(
+        'Delete All Decks',
+        'This will permanently delete all decks and cards. Are you sure?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete All', style: 'destructive', onPress: run },
+        ]
+      );
+    }
+  };
+
   const handleResetAndSeed = () => {
-    Alert.alert(
-      'Reset Database',
-      'This will delete all data and re-seed with sample cards. Are you sure?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: async () => {
-            await resetDatabase();
-            await seedDatabase();
-            Alert.alert('Done', 'Database has been reset with sample data.');
-          },
-        },
-      ]
-    );
+    const run = () => {
+      resetDatabase()
+        .then(() => seedDatabase())
+        .then(() => Alert.alert('Done', 'Database has been reset with sample data.'))
+        .catch(e => Alert.alert('Error', String(e)));
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Reset database and re-seed with sample cards? All data will be lost.')) run();
+    } else {
+      Alert.alert(
+        'Reset Database',
+        'This will delete all data and re-seed with sample cards. Are you sure?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Reset', style: 'destructive', onPress: run },
+        ]
+      );
+    }
   };
 
   return (
@@ -49,6 +74,7 @@ export default function SettingsScreen() {
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Debug</Text>
+        <SettingsRow label="Delete all decks" onPress={handleDeleteAllDecks} destructive />
         <SettingsRow label="Reset database & re-seed" onPress={handleResetAndSeed} destructive />
       </View>
 

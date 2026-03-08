@@ -96,25 +96,37 @@ function extractAudio(html: string): { src: string | null; html: string } {
  *  - No percentage-height CSS quirks (iframe fills parent via flex)
  * Tap-to-flip is wired via window.postMessage from inside the iframe.
  */
-function buildIframeDoc(html: string): string {
+function extractStyles(html: string): { styles: string; content: string } {
+  const styles: string[] = [];
+  const content = html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_, css) => {
+    styles.push(css);
+    return '';
+  });
+  return { styles: styles.join('\n'), content: content.trim() };
+}
+
+function buildIframeDoc(html: string, deckCss?: string): string {
+  const { styles, content } = extractStyles(html);
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,sans-serif}
-  html,body{background:#fff;color:#111827;text-align:center;white-space:pre-line;word-break:break-word;-webkit-text-size-adjust:100%}
-  body{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:20px 24px;gap:10px;font-size:17px;line-height:1.6;cursor:pointer}
-  img{max-width:100%;height:auto;border-radius:10px;display:block;margin:6px auto}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;min-height:100vh;-webkit-text-size-adjust:100%}
+  body{display:flex;flex-direction:column;justify-content:center;align-items:stretch;cursor:pointer}
+  .card{flex:1;padding:20px 24px;text-align:center;word-break:break-word;font-size:17px;line-height:1.6;color:#111827;font-family:system-ui,sans-serif;background:#fff}
+  img{max-width:100%;height:auto;display:block;margin:6px auto}
   audio{width:100%;margin:6px 0;border-radius:8px;cursor:auto}
-  b,strong{font-weight:700}
-  u{text-decoration:underline}
-  i,em{font-style:italic}
+  .cloze-blank{display:inline-block;background:#dbeafe;color:#1d4ed8;padding:1px 8px;border-radius:5px;font-weight:700;letter-spacing:0.5px}
+  .cloze-answer{display:inline-block;background:#dcfce7;color:#15803d;padding:1px 8px;border-radius:5px;font-weight:700;border-bottom:2px solid #16a34a}
 </style>
+${deckCss ? `<style>${deckCss}</style>` : ''}
+${styles ? `<style>${styles}</style>` : ''}
 </head>
 <body>
-${html}
+<div class="card">${content}</div>
 <script>
 document.body.addEventListener('click',function(e){
   var t=e.target;
@@ -130,7 +142,7 @@ document.body.addEventListener('click',function(e){
 </html>`;
 }
 
-function IframeContent({ html, onFlip }: { html: string; onFlip: () => void }) {
+function IframeContent({ html, onFlip, deckCss, prebuilt }: { html: string; onFlip: () => void; deckCss?: string; prebuilt?: boolean }) {
   // Listen for flip messages from the iframe
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -141,7 +153,7 @@ function IframeContent({ html, onFlip }: { html: string; onFlip: () => void }) {
     return () => window.removeEventListener('message', handler);
   }, [onFlip]);
 
-  const doc = buildIframeDoc(html);
+  const doc = prebuilt ? html : buildIframeDoc(html, deckCss);
 
   return (
     // @ts-ignore — iframe is a valid HTML element on web
@@ -154,7 +166,7 @@ function IframeContent({ html, onFlip }: { html: string; onFlip: () => void }) {
 
 // ── Native: image + text renderer ─────────────────────────────────────────────
 
-function NativeContent({ html }: { html: string }) {
+function NativeInner({ html }: { html: string }) {
   const images = extractImages(html);
   const rawText = htmlToText(html);
   const sections = rawText.split('\n').map(s => s.trim()).filter(Boolean);
@@ -163,7 +175,7 @@ function NativeContent({ html }: { html: string }) {
   const mainFontSize = cardFontSize(mainSection.length);
 
   return (
-    <ScrollView contentContainerStyle={richStyles.scroll} showsVerticalScrollIndicator={false}>
+    <>
       {images.map((imgSrc, i) => (
         <Image key={i} source={{ uri: imgSrc }} style={richStyles.image} resizeMode="contain" />
       ))}
@@ -180,13 +192,21 @@ function NativeContent({ html }: { html: string }) {
           ))}
         </>
       )}
+    </>
+  );
+}
+
+function NativeContent({ html }: { html: string }) {
+  return (
+    <ScrollView contentContainerStyle={richStyles.scroll} showsVerticalScrollIndicator={false}>
+      <NativeInner html={html} />
     </ScrollView>
   );
 }
 
 // ── Plain text renderer ────────────────────────────────────────────────────────
 
-function PlainContent({ text }: { text: string }) {
+function PlainInner({ text }: { text: string }) {
   const sections = text.split('\n').map(s => s.trim()).filter(Boolean);
   if (sections.length === 0) return null;
   const mainSection = sections[0];
@@ -194,7 +214,7 @@ function PlainContent({ text }: { text: string }) {
   const mainFontSize = cardFontSize(mainSection.length);
 
   return (
-    <ScrollView contentContainerStyle={richStyles.scroll} showsVerticalScrollIndicator={false}>
+    <>
       <Text style={[richStyles.mainText, { fontSize: mainFontSize, lineHeight: mainFontSize * 1.4 }]}>
         {mainSection}
       </Text>
@@ -206,8 +226,86 @@ function PlainContent({ text }: { text: string }) {
           ))}
         </>
       )}
+    </>
+  );
+}
+
+function PlainContent({ text }: { text: string }) {
+  return (
+    <ScrollView contentContainerStyle={richStyles.scroll} showsVerticalScrollIndicator={false}>
+      <PlainInner text={text} />
     </ScrollView>
   );
+}
+
+// ── Combined content (flipped — shows front above answer divider) ──────────────
+
+function CombinedNativeContent({ front, back }: { front: string; back: string }) {
+  const { html: frontHtml } = extractAudio(front);
+  const { html: backHtml } = extractAudio(back);
+  const frontIsHtml = hasHtml(front);
+  const backIsHtml = hasHtml(back);
+
+  return (
+    <ScrollView contentContainerStyle={richStyles.combinedScroll} showsVerticalScrollIndicator={false}>
+      <View style={richStyles.frontSection}>
+        {frontIsHtml ? <NativeInner html={frontHtml} /> : <PlainInner text={front} />}
+      </View>
+      <View style={richStyles.answerSeparator}>
+        <View style={richStyles.answerSeparatorLine} />
+        <Text style={richStyles.answerSeparatorLabel}>Answer</Text>
+        <View style={richStyles.answerSeparatorLine} />
+      </View>
+      <View style={richStyles.backSection}>
+        {backIsHtml ? <NativeInner html={backHtml} /> : <PlainInner text={back} />}
+      </View>
+    </ScrollView>
+  );
+}
+
+function buildCombinedIframeDoc(frontHtml: string, backHtml: string, deckCss?: string): string {
+  const { styles: frontStyles, content: frontContent } = extractStyles(frontHtml);
+  const { styles: backStyles, content: backContent } = extractStyles(backHtml);
+  const allStyles = [frontStyles, backStyles].filter(Boolean).join('\n');
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;min-height:100vh;-webkit-text-size-adjust:100%}
+  body{display:flex;flex-direction:column;align-items:stretch;cursor:pointer}
+  .card{text-align:center;word-break:break-word;font-size:17px;line-height:1.6;color:#111827;font-family:system-ui,sans-serif;background:#fff}
+  img{max-width:100%;height:auto;display:block;margin:6px auto}
+  audio{width:100%;margin:6px 0;border-radius:8px;cursor:auto}
+  .cloze-blank{display:inline-block;background:#dbeafe;color:#1d4ed8;padding:1px 8px;border-radius:5px;font-weight:700;letter-spacing:0.5px}
+  .cloze-answer{display:inline-block;background:#dcfce7;color:#15803d;padding:1px 8px;border-radius:5px;font-weight:700;border-bottom:2px solid #16a34a}
+  .front-wrapper{opacity:0.55;font-size:0.88em;padding:16px 24px 10px}
+  .sep{display:flex;align-items:center;gap:10px;padding:0 24px;margin:6px 0;color:#9ca3af;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}
+  .sep::before,.sep::after{content:'';flex:1;height:1px;background:#e5e7eb}
+  .back-wrapper{padding:10px 24px 20px}
+</style>
+${deckCss ? `<style>${deckCss}</style>` : ''}
+${allStyles ? `<style>${allStyles}</style>` : ''}
+</head>
+<body>
+<div class="front-wrapper card">${frontContent}</div>
+<div class="sep">Answer</div>
+<div class="back-wrapper card">${backContent}</div>
+<script>
+document.body.addEventListener('click',function(e){
+  var t=e.target;
+  while(t){
+    var tag=t.tagName&&t.tagName.toUpperCase();
+    if(tag==='AUDIO'||tag==='VIDEO'||tag==='BUTTON'||tag==='A'||tag==='INPUT'||t.controls){return;}
+    t=t.parentElement;
+  }
+  window.parent.postMessage('__gk_flip__','*');
+});
+</script>
+</body>
+</html>`;
 }
 
 // ── Audio chip (native only — informational, no playback without expo-av) ─────
@@ -235,6 +333,7 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
 
     useImperativeHandle(ref, () => ({
       swipe(direction: SwipeDirection) {
+        if (!flipped) return;
         if (direction === 'up') {
           translateY.value = withTiming(-FLY_OFF_Y, { duration: 280 });
           translateX.value = withTiming(0, { duration: 280 });
@@ -250,7 +349,7 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
     }));
 
     const panGesture = Gesture.Pan()
-      .enabled(isTop)
+      .enabled(isTop && flipped)
       .onUpdate((e) => {
         translateX.value = e.translationX;
         translateY.value = e.translationY;
@@ -303,15 +402,13 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
       return { transform: [{ scale }, { translateY: yOffset }] };
     });
 
-    const rawDisplay = flipped ? card.back : card.front;
     const isWeb = Platform.OS === 'web';
+    const frontIsHtml = hasHtml(card.front);
 
-    // On native: extract audio for the chip; on web: include audio in the iframe
-    const { src: audioSrc, html: nativeDisplay } = !isWeb
-      ? extractAudio(rawDisplay)
+    // On native: extract audio from the front for the chip
+    const { src: audioSrc, html: frontNativeHtml } = !isWeb
+      ? extractAudio(card.front)
       : { src: null, html: '' };
-
-    const isHtml = hasHtml(rawDisplay);
 
     return (
       <Animated.View style={[styles.wrap, { zIndex: 10 - index }, cardAnimStyle]}>
@@ -334,23 +431,32 @@ const SwipeCard = React.forwardRef<SwipeCardHandle, SwipeCardProps>(
               </Text>
             </Pressable>
 
-            {/* Native audio chip (shown above content, outside Pressable) */}
-            {!isWeb && audioSrc && <AudioChip />}
+            {/* Native audio chip — only shown on front */}
+            {!isWeb && !flipped && audioSrc && <AudioChip />}
 
             {/* Content area */}
-            {isWeb && isHtml ? (
-              // Web + HTML: iframe renders images and audio natively
-              // Tap-to-flip is handled inside the iframe via postMessage
+            {isWeb ? (
               <View style={styles.contentArea}>
-                <IframeContent html={rawDisplay} onFlip={handleFlip} />
-              </View>
-            ) : (
-              // Native (or web plain text): Pressable for tap-to-flip
-              <Pressable onPress={handleFlip} style={styles.contentArea}>
-                {isHtml ? (
-                  <NativeContent html={nativeDisplay} />
+                {flipped ? (
+                  <IframeContent
+                    html={buildCombinedIframeDoc(card.front, card.back, card.css)}
+                    onFlip={handleFlip}
+                    prebuilt
+                  />
                 ) : (
-                  <PlainContent text={rawDisplay} />
+                  <IframeContent html={card.front} onFlip={handleFlip} deckCss={card.css} />
+                )}
+              </View>
+            ) : flipped ? (
+              <Pressable onPress={handleFlip} style={styles.contentArea}>
+                <CombinedNativeContent front={card.front} back={card.back} />
+              </Pressable>
+            ) : (
+              <Pressable onPress={handleFlip} style={styles.contentArea}>
+                {frontIsHtml ? (
+                  <NativeContent html={frontNativeHtml} />
+                ) : (
+                  <PlainContent text={card.front} />
                 )}
               </Pressable>
             )}
@@ -422,6 +528,42 @@ const richStyles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
     marginBottom: 2,
+  },
+  combinedScroll: {
+    flexGrow: 1,
+    alignItems: 'center',
+    paddingHorizontal: 28,
+    paddingVertical: 16,
+  },
+  frontSection: {
+    width: '100%',
+    alignItems: 'center',
+    opacity: 0.55,
+    paddingBottom: 4,
+  },
+  answerSeparator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    gap: 10,
+    marginVertical: 14,
+  },
+  answerSeparatorLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#e5e7eb',
+  },
+  answerSeparatorLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    color: '#9ca3af',
+    textTransform: 'uppercase',
+  },
+  backSection: {
+    width: '100%',
+    alignItems: 'center',
+    paddingTop: 4,
   },
 });
 

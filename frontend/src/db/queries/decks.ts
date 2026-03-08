@@ -77,17 +77,17 @@ export async function getDeck(id: string): Promise<Deck | null> {
   return db.getFirstAsync<Deck>('SELECT * FROM decks WHERE id = ?', [id]);
 }
 
-export async function createDeck(name: string, description: string = ''): Promise<Deck> {
+export async function createDeck(name: string, description: string = '', css: string = ''): Promise<Deck> {
   const db = await getDatabase();
   const now = new Date().toISOString();
   const id = uuidv4();
 
   await db.runAsync(
-    'INSERT INTO decks (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    [id, name, description, now, now]
+    'INSERT INTO decks (id, name, description, css, new_cards_per_day, max_reviews_per_day, created_at, updated_at) VALUES (?, ?, ?, ?, 10, 9999, ?, ?)',
+    [id, name, description, css, now, now]
   );
 
-  return { id, name, description, new_cards_per_day: 20, created_at: now, updated_at: now };
+  return { id, name, description, css, new_cards_per_day: 10, max_reviews_per_day: 9999, created_at: now, updated_at: now };
 }
 
 export async function updateDeck(id: string, updates: Partial<Pick<Deck, 'name' | 'description' | 'new_cards_per_day'>>): Promise<void> {
@@ -107,4 +107,13 @@ export async function updateDeck(id: string, updates: Partial<Pick<Deck, 'name' 
 export async function deleteDeck(id: string): Promise<void> {
   const db = await getDatabase();
   await db.runAsync('DELETE FROM decks WHERE id = ?', [id]);
+}
+
+export async function deleteAllDecks(): Promise<void> {
+  const db = await getDatabase();
+  // review_log and daily_stats cascade from cards/decks via ON DELETE CASCADE
+  await db.runAsync('DELETE FROM review_log');
+  await db.runAsync('DELETE FROM daily_stats');
+  await db.runAsync('DELETE FROM cards');
+  await db.runAsync('DELETE FROM decks');
 }

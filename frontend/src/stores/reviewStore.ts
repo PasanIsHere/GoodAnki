@@ -7,6 +7,16 @@ export interface UndoEntry {
   wasNew: boolean;
 }
 
+function countByState(cards: Card[]) {
+  let newCount = 0, learnCount = 0, reviewCount = 0;
+  for (const c of cards) {
+    if (c.state === State.New) newCount++;
+    else if (c.state === State.Review) reviewCount++;
+    else learnCount++; // Learning + Relearning
+  }
+  return { newCount, learnCount, reviewCount };
+}
+
 interface ReviewState {
   cards: Card[];
   currentIndex: number;
@@ -15,8 +25,14 @@ interface ReviewState {
   sessionComplete: boolean;
   reviewedCount: number;
 
+  // Initial counts for progress estimation
+  initialNew: number;
+  initialLearn: number;
+  initialReview: number;
+
   setCards: (cards: Card[]) => void;
   advanceCard: () => void;
+  requeueCard: (card: Card) => void;
   pushUndo: (entry: UndoEntry) => void;
   popUndo: () => UndoEntry | undefined;
   restoreCard: (card: Card) => void;
@@ -31,8 +47,21 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   isLoading: false,
   sessionComplete: false,
   reviewedCount: 0,
+  initialNew: 0,
+  initialLearn: 0,
+  initialReview: 0,
 
-  setCards: (cards) => set({ cards, currentIndex: 0, sessionComplete: cards.length === 0 }),
+  setCards: (cards) => {
+    const { newCount, learnCount, reviewCount } = countByState(cards);
+    set({
+      cards,
+      currentIndex: 0,
+      sessionComplete: cards.length === 0,
+      initialNew: newCount,
+      initialLearn: learnCount,
+      initialReview: reviewCount,
+    });
+  },
 
   advanceCard: () => {
     const { cards, currentIndex, reviewedCount } = get();
@@ -44,26 +73,28 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     }
   },
 
+  requeueCard: (card) => set((s) => ({
+    cards: [...s.cards, card],
+  })),
+
   pushUndo: (entry) => set((s) => ({ undoStack: [...s.undoStack, entry] })),
 
   popUndo: () => {
     const { undoStack } = get();
     if (undoStack.length === 0) return undefined;
     const entry = undoStack[undoStack.length - 1];
-    set((s) => ({
-      undoStack: s.undoStack.slice(0, -1),
-    }));
+    set((s) => ({ undoStack: s.undoStack.slice(0, -1) }));
     return entry;
   },
 
   restoreCard: (card) => {
     const { currentIndex, cards, reviewedCount } = get();
-    // Insert card back at current position
-    const newCards = [...cards];
-    const newIndex = Math.max(0, currentIndex - (get().sessionComplete ? 0 : 0));
-    newCards.splice(currentIndex, 0, card);
+    // Remove any re-queued copy of this card that may exist beyond currentIndex,
+    // then insert the pre-review version at the current position.
+    const filtered = cards.filter((c, i) => i < currentIndex || c.id !== card.id);
+    filtered.splice(currentIndex, 0, card);
     set({
-      cards: newCards,
+      cards: filtered,
       sessionComplete: false,
       reviewedCount: Math.max(0, reviewedCount - 1),
     });

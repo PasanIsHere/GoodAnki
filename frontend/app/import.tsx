@@ -2,16 +2,25 @@ import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+
+function webAlert(title: string, message: string) {
+  if (Platform.OS === 'web') {
+    window.alert(`${title}\n\n${message}`);
+  } else {
+    Alert.alert(title, message);
+  }
+}
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import { createDeck } from '@/src/db/queries/decks';
-import { createCardsBatch } from '@/src/db/queries/cards';
+import { createCardsBatch, createNoteTypesBatch } from '@/src/db/queries/cards';
 
 const API_URL = 'http://localhost:8000';
 
@@ -19,6 +28,7 @@ interface ParsedCard {
   front: string;
   back: string;
   tags: string;
+  notetype_id: string;
 }
 
 interface ParsedDeck {
@@ -27,12 +37,33 @@ interface ParsedDeck {
   cards: ParsedCard[];
 }
 
+interface ParsedNoteType {
+  id: string;
+  name: string;
+  css: string;
+}
+
 interface ParsedResult {
+  notetypes: ParsedNoteType[];
   decks: ParsedDeck[];
   total_cards: number;
 }
 
 type ImportPhase = 'idle' | 'uploading' | 'previewing' | 'importing' | 'done';
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 export default function ImportScreen() {
   const router = useRouter();
@@ -59,9 +90,16 @@ export default function ImportScreen() {
       const formData = new FormData();
       // On Expo Web, asset.file is a native browser File object — use it directly.
       // On native (iOS/Android), use the {uri, name, type} RN FormData syntax.
-      if ((file as any).file instanceof File) {
-        formData.append('file', (file as any).file);
+      const nativeFile = (file as any).file;
+      if (nativeFile && typeof nativeFile.arrayBuffer === 'function') {
+        // Expo Web: native browser File object
+        formData.append('file', nativeFile);
+      } else if (file.uri.startsWith('blob:') || file.uri.startsWith('data:')) {
+        // Expo Web fallback: fetch blob from URI
+        const blob = await fetch(file.uri).then(r => r.blob());
+        formData.append('file', new File([blob], file.name, { type: 'application/octet-stream' }));
       } else {
+        // React Native native path
         formData.append('file', {
           uri: file.uri,
           name: file.name,
@@ -84,7 +122,7 @@ export default function ImportScreen() {
       setPhase('previewing');
     } catch (e: any) {
       setPhase('idle');
-      Alert.alert(
+      webAlert(
         'Import Error',
         e.message?.includes('fetch') || e.message?.includes('connect')
           ? `Could not reach the backend server at ${API_URL}.\n\nMake sure it is running:\n  cd backend\n  uvicorn app.main:app`
@@ -106,7 +144,7 @@ export default function ImportScreen() {
       setPhase('previewing');
     } catch (e: any) {
       setPhase('idle');
-      Alert.alert(
+      webAlert(
         'Load Error',
         e.message?.includes('fetch') || e.message?.includes('connect')
           ? `Could not reach the backend server at ${API_URL}.\n\nMake sure it is running:\n  cd backend\n  uvicorn app.main:app`
@@ -120,6 +158,12 @@ export default function ImportScreen() {
     setPhase('importing');
 
     try {
+      const notetypes = preview.notetypes ?? [];
+      if (notetypes.length > 0) {
+        setImportProgress(`Saving ${notetypes.length} note type(s)…`);
+        await createNoteTypesBatch(notetypes);
+      }
+
       for (let i = 0; i < preview.decks.length; i++) {
         const parsedDeck = preview.decks[i];
         setImportProgress(
@@ -131,7 +175,7 @@ export default function ImportScreen() {
       setPhase('done');
     } catch (e: any) {
       setPhase('previewing');
-      Alert.alert('Error', 'Failed to save imported cards to the database.');
+      webAlert('Import Error', e?.message || 'Failed to save imported cards to the database.');
     }
   };
 
@@ -198,12 +242,12 @@ export default function ImportScreen() {
                       <View key={j} style={styles.sampleCard}>
                         <View style={styles.sampleSide}>
                           <Text style={styles.sampleSideLabel}>Q</Text>
-                          <Text style={styles.sampleText} numberOfLines={2}>{card.front}</Text>
+                          <Text style={styles.sampleText} numberOfLines={2}>{stripHtml(card.front)}</Text>
                         </View>
                         <View style={styles.sampleDivider} />
                         <View style={styles.sampleSide}>
                           <Text style={[styles.sampleSideLabel, { color: '#22c55e' }]}>A</Text>
-                          <Text style={styles.sampleText} numberOfLines={3}>{card.back}</Text>
+                          <Text style={styles.sampleText} numberOfLines={3}>{stripHtml(card.back)}</Text>
                         </View>
                       </View>
                     ))}

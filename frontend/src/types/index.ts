@@ -2,11 +2,19 @@ import { State, Rating } from 'ts-fsrs';
 
 export { State, Rating };
 
+export interface NoteType {
+  id: string;
+  name: string;
+  css: string;
+}
+
 export interface Deck {
   id: string;
   name: string;
   description: string;
+  css: string;
   new_cards_per_day: number;
+  max_reviews_per_day: number;
   created_at: string;
   updated_at: string;
 }
@@ -14,6 +22,8 @@ export interface Deck {
 export interface Card {
   id: string;
   deck_id: string;
+  notetype_id: string;
+  css?: string; // populated via JOIN with note_types, not stored in cards table
   front: string;
   back: string;
   tags: string;
